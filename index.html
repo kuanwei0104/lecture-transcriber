@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>即時課堂轉錄</title>
+<meta name="theme-color" content="#1a252f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="課堂轉錄">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>即時課堂轉錄<span class="sub"> <span class="sep">｜</span> 精修順稿</span></h1>
+  <div class="actions">
+    <label class="chk"><input type="checkbox" id="chkTranslate" checked> 翻譯</label>
+    <button id="btnNew" class="ghost" title="清除內容，開始新課程" aria-label="新課程">🗒<span class="lbl"> 新課程</span></button>
+    <button id="btnExport" class="ghost" title="匯出 HTML" aria-label="匯出 HTML">📥<span class="lbl"> 匯出 HTML</span></button>
+    <button id="btnRec" class="rec">▶ 開始錄音</button>
+    <button id="btnSettings" class="icon" aria-label="設定">⚙</button>
+  </div>
+</header>
+
+<div class="statusbar">
+  <span id="status">初始化中…</span>
+  <span id="timers"></span>
+  <span id="engine" class="engine"></span>
+</div>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="transcript" class="active">📝 逐字稿</button>
+  <button role="tab" data-tab="narrative">📖 順稿</button>
+  <button role="tab" data-tab="diagrams">🖼 圖解</button>
+</nav>
+
+<main class="panes">
+  <section class="pane" id="pane-transcript">
+    <div class="pane-head blue">📝 即時逐字稿</div>
+    <div class="scroll" id="transcript"><p class="hint">按「▶ 開始錄音」後，講者說的話會即時出現在這裡。</p></div>
+    <div id="translateBox" class="translate">
+      <div class="pane-head steel" id="translateHead">📄 English Translation</div>
+      <div class="scroll mono" id="translation"></div>
+    </div>
+  </section>
+
+  <section class="pane paper" id="pane-narrative">
+    <div class="pane-head navy">📖 精修順稿 <span id="narrTimer" class="right"></span></div>
+    <div class="scroll narrative" id="narrative">
+      <p class="hint">此區會顯示精修後的「順稿」格式，每隔幾分鐘自動整理一次。</p>
+      <p class="hint">請按右上「▶ 開始錄音」開始。</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-diagrams">
+    <div class="pane-head dark">🖼 圖解示意圖 <span id="diagTimer" class="right"></span></div>
+    <div class="scroll" id="diagrams"><p class="hint center">等待生成圖解…<br>（開始錄音後，依設定間隔自動產生）</p></div>
+  </section>
+</main>
+
+<dialog id="settings">
+  <form method="dialog" id="settingsForm">
+    <h2>設定</h2>
+
+    <label class="field">
+      <span>Google Gemini API Key</span>
+      <div class="row">
+        <input type="password" id="setKey" autocomplete="off" spellcheck="false" placeholder="AIza…">
+        <button type="button" id="btnShowKey" class="ghost small">顯示</button>
+      </div>
+      <small>免費申請：<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>。Key 只存在這台裝置的瀏覽器中。</small>
+    </label>
+
+    <label class="field">
+      <span>語音辨識方式</span>
+      <select id="setEngine">
+        <option value="browser">瀏覽器即時辨識（最即時，推薦 Chrome / Edge / Safari）</option>
+        <option value="gemini">Gemini 音訊辨識（較穩定，約延遲 5–15 秒，會消耗較多免費額度）</option>
+      </select>
+      <small id="engineNote"></small>
+    </label>
+
+    <label class="field">
+      <span>上課語言</span>
+      <select id="setLang">
+        <option value="zh-TW">中文（台灣）</option>
+        <option value="en-US">English</option>
+      </select>
+    </label>
+
+    <div class="row two">
+      <label class="field">
+        <span>順稿間隔（秒）</span>
+        <input type="number" id="setNarr" min="60" step="30">
+      </label>
+      <label class="field">
+        <span>圖解間隔（秒）</span>
+        <input type="number" id="setDiag" min="60" step="30">
+      </label>
+    </div>
+
+    <div class="dlg-actions">
+      <button value="cancel" class="ghost">取消</button>
+      <button value="save" id="btnSave" class="primary">儲存</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
