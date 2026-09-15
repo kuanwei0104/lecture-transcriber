@@ -128,8 +128,9 @@ async function genNarrative(final = false) {
   narrBusy = true;
   setStatus("順稿整理中…");
   try {
-    const res = await gemini.polishNarrative(text, session.titles);
-    const item = { ts: hhmm(), md: res.markdown };
+    const lang = detectLang(text, lectureLang());  // 順稿依這段上課內容的語言產生
+    const res = await gemini.polishNarrative(text, session.titles, lang);
+    const item = { ts: hhmm(), md: res.markdown, lang };
     session.titles.push(...res.titles);
     session.narr.push(item);
     renderNarr(item);
@@ -140,7 +141,9 @@ async function genNarrative(final = false) {
       session.buf.narr.unshift(...parts);     // 放回去，下一輪與新內容一起整理
       setStatus(`順稿暫時失敗，下次自動重試：${e.message.slice(0, 80)}`, true);
     } else {
-      const item = { ts: hhmm(), md: `## 原始逐字稿（Gemini 無法連線，未整理）\n${text}` };
+      const lang = detectLang(text, lectureLang());
+      const heading = lang === "en" ? "Raw transcript (Gemini unavailable, not polished)" : "原始逐字稿（Gemini 無法連線，未整理）";
+      const item = { ts: hhmm(), md: `## ${heading}\n${text}`, lang };
       session.narr.push(item);
       renderNarr(item);
       setStatus(`順稿失敗：${e.message.slice(0, 80)}`, true);
@@ -210,14 +213,19 @@ function renderQuestions(item, { live = false } = {}) {
   return card;
 }
 
-// 依逐字稿內容判斷上課語言：英文單字比中文字多就視為英文課
-function lectureLang() {
-  const text = session.lines.map((l) => l.text).join(" ");
-  const cjk = (text.match(/[\u3400-\u9fff]/g) || []).length;
+// 判斷文字語言：英文單字比中文字多就視為英文。
+// 內容很少時：只有單一語言就直接判斷，否則用 fallback（整堂課的語言或設定）
+function detectLang(text, fallback) {
+  const cjk = (text.match(/[㐀-鿿]/g) || []).length;
   const words = (text.match(/[A-Za-z]+(?:['’][A-Za-z]+)?/g) || []).length;
-  if (cjk + words < 20) return cfg.lang.startsWith("en") ? "en" : "zh";
+  if (cjk + words < 20) {
+    if (cjk === 0 && words >= 5) return "en";
+    if (words === 0 && cjk >= 5) return "zh";
+    return fallback ?? (cfg.lang.startsWith("en") ? "en" : "zh");
+  }
   return words > cjk ? "en" : "zh";
 }
+const lectureLang = () => detectLang(session.lines.map((l) => l.text).join(" "));
 
 function questionSource(lang) {
   // 中文課以精修順稿為主；英文課另附原始英文逐字稿，讓問題貼近原本用語
@@ -423,12 +431,18 @@ function questionsFor(q, lang) {
 
 async function buildExport(lang, progress) {
   const T = EXPORT_TEXT[lang];
-  const narrSrc = session.narr;                         // 順稿一律是中文
+  const narrSrc = session.narr;
+  const mdKey = `md_${lang}`;
+  // 順稿依上課語言產生（舊資料沒有 lang 視為中文）；語言不同時才翻譯
+  const narrMd = (n) => ((n.lang || "zh") === lang ? n.md : n[mdKey]);
   const jobs = [];
+  narrSrc.forEach((n) => {
+    if (!narrMd(n)) jobs.push(async () => { n[mdKey] = await gemini.translateMarkdown(n.md, lang); });
+  });
   if (lang === "en") {
-    narrSrc.forEach((n) => { if (!n.md_en) jobs.push(async () => { n.md_en = await gemini.translateMarkdown(n.md, "en"); }); });
     session.diagrams.forEach((d) => { if (!d.spec_en) jobs.push(async () => { d.spec_en = await gemini.translateJson(d.spec, "en"); }); });
   }
+  if (jobs.length && !gemini) throw new Error("需要翻譯，請先在設定中輸入 Gemini API Key");
   session.questions.forEach((q) => {
     if ((q.lang || "zh") !== lang && !q[`data_${lang}`]) jobs.push(() => questionsFor(q, lang));
   });
@@ -442,7 +456,7 @@ async function buildExport(lang, progress) {
     html: `<section class="questions">${questionsHtml({ ts: q.ts, lang, data: await questionsFor(q, lang) })}</section>`,
   })));
   const blocks = [
-    ...narrSrc.map((n) => ({ ts: n.ts, html: `<div class="ts">⏱ ${esc(n.ts)}</div>${mdToHtml(lang === "en" ? n.md_en : n.md)}` })),
+    ...narrSrc.map((n) => ({ ts: n.ts, html: `<div class="ts">⏱ ${esc(n.ts)}</div>${mdToHtml(narrMd(n))}` })),
     ...qBlocks,
     ...session.diagrams.map((d) => {
       const spec = lang === "en" ? d.spec_en : d.spec;

@@ -99,9 +99,36 @@ if a line already has parallel Chinese and English versions, keep only the Engli
     return text.replace(/^["「]|["」]$/g, "").trim();
   }
 
-  async polishNarrative(raw, prevTitles) {
-    const prev = prevTitles.length ? prevTitles.slice(-6).map((t) => `- ${t}`).join("\n") : "（尚無）";
-    const instr = `你是學術編輯。把以下口語化的課堂逐字稿，整理成正式的「順稿」格式（繁體中文輸出）。
+  async polishNarrative(raw, prevTitles, lang = "zh") {
+    const prev = prevTitles.length ? prevTitles.slice(-6).map((t) => `- ${t}`).join("\n") : (lang === "en" ? "(none yet)" : "（尚無）");
+    const instr = lang === "en" ? `You are an academic editor. Turn the spoken lecture transcript below into polished, well-structured lecture notes in English.
+
+[Style example]
+## Introduction: Three Major Challenges
+I think the challenges we face today come mainly from three different fields.
+First, in the physical sciences, there is a problem that has never been solved: turbulence.
+Second, in the social sciences, the corresponding problem is the stock market.
+Third, in medicine, it is our brain signals, that is, the EEG.
+> These three problems share one thing in common: they are all random signals.
+
+[Formatting rules]
+1. Split the transcript into 1–3 sections, each starting with \`## Heading\` (max 6 words)
+2. Remove filler words ("um", "you know", "like", "so", "right") and false starts, but keep the speaker's first-person voice
+3. Write formulas as plain Unicode inside backticks, e.g. \`z = (x̄ − μ) / (σ/√n)\`; never use LaTeX ($, \\frac, etc.); write Greek letters directly as α, β, μ
+4. Use **bold** for points the speaker clearly emphasizes
+5. Use \`> quote\` for side notes, asides and examples
+6. Use \`1.\` \`2.\` or \`-\` for lists
+7. The transcript comes from live speech recognition and may contain misheard words; fix them from context
+8. Stay faithful to what the speaker actually said — do not add facts, mechanisms or examples that are not in the transcript
+9. Output only Markdown in English — no explanations, no JSON
+
+[Sections already written (avoid repeating these headings, but you may continue the topic)]
+${prev}
+
+[This part of the transcript]
+${raw}
+
+Output the polished Markdown notes:` : `你是學術編輯。把以下口語化的課堂逐字稿，整理成正式的「順稿」格式（繁體中文輸出）。
 
 【格式範例】
 ## 課程介紹：三大挑戰
@@ -120,8 +147,7 @@ if a line already has parallel Chinese and English versions, keep only the Engli
 6. 旁註、補充、舉例可用 \`> 引文\` 標記
 7. 列舉用 \`1.\` \`2.\` 或 \`-\`
 8. 逐字稿來自即時語音辨識，常有同音錯字，請依上下文修正
-9. 若逐字稿是英文，也請整理成繁體中文順稿
-10. 不要加任何說明文字、不要 JSON、直接輸出 markdown
+9. 不要加任何說明文字、不要 JSON、直接輸出 markdown
 
 【已產生的章節（避免重複命名，但可延續主題）】
 ${prev}
