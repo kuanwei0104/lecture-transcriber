@@ -101,9 +101,15 @@
       </label>
     </div>
 
+    <label class="field">
+      <span>課後提問數量</span>
+      <input type="number" id="setQCount" min="1" max="20" step="1" inputmode="numeric">
+      <small>停止錄音後產生的問題題數（1–20 題）</small>
+    </label>
+
     <div class="dlg-actions">
-      <button value="cancel" class="ghost">取消</button>
-      <button value="save" id="btnSave" class="primary">儲存</button>
+      <button type="button" id="btnCancel" class="ghost">取消</button>
+      <button type="submit" id="btnSave" class="primary">儲存</button>
     </div>
   </form>
 </dialog>

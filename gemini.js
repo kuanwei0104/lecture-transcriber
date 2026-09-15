@@ -111,32 +111,31 @@ ${raw}
     return { markdown: md, titles };
   }
 
-  async questions(content) {
+  async questions(content, count = 8) {
+    const n = Math.min(20, Math.max(1, Math.round(count) || 8));
     const instr = `以下是一堂課／演講的內容（精修順稿與逐字稿）：
 
 ${content}
 
-請根據內容產生「課後提問」，以 JSON 回傳（繁體中文，術語可附英文）：
+請根據內容產生「課後提問」，可用來詢問講者或和同學討論。以 JSON 回傳（繁體中文，術語可附英文）：
 {
   "summary": "一句話總結本堂重點（40字內）",
-  "speaker": [
-    {"q": "可以直接問講者的問題", "type": "釐清｜延伸｜應用｜質疑", "context": "對應講稿中的哪段內容（20字內）"}
-  ],
-  "discussion": [
-    {"q": "適合同學之間討論的問題", "hint": "討論方向或切入點（30字內）"}
+  "questions": [
+    {"q": "問題", "context": "對應講稿中的哪段內容（20字內）"}
   ]
 }
 
 規則：
-1. speaker 4-5 題：涵蓋「釐清沒講清楚的地方」「延伸到更深的原理」「實際應用或例子」「對論點的合理質疑或限制」
-2. discussion 3-4 題：開放式、沒有標準答案、能引發不同觀點
+1. questions 剛好 ${n} 題，不要分類
+2. 題目類型盡量多元：釐清沒講清楚的地方、延伸到更深的原理、實際應用或例子、對論點的合理質疑、開放式的觀點討論
 3. 問題要具體、扣緊講稿內容，不要空泛（避免「你怎麼看？」這類問題）
 4. 每題 60 字內，語氣自然、可以直接念出來
 5. 若內容是廣告或閒聊，也照實根據內容出題`;
     let raw = await this.ask({ system: "你是擅長引導討論的助教，只輸出純 JSON。", parts: [{ text: instr }], smart: true, json: true });
     raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
     const data = JSON.parse(raw);
-    if (!data || (!data.speaker?.length && !data.discussion?.length)) throw new Error("問題格式錯誤");
+    if (!data?.questions?.length) throw new Error("問題格式錯誤");
+    data.questions = data.questions.slice(0, n);
     return data;
   }
 

@@ -12,6 +12,7 @@ const DEFAULTS = {
   narrInt: 180,
   diagInt: 120,
   translate: true,
+  qCount: 8,
 };
 let cfg = { ...DEFAULTS, ...store.get("cfg", {}) };
 let gemini = cfg.key ? new Gemini(cfg.key) : null;
@@ -151,31 +152,23 @@ async function genNarrative(final = false) {
 }
 
 /* ───────────── 課後提問 ───────────── */
+// 舊資料（分成 speaker / discussion）也合併成單一清單
+const questionList = (data) => data.questions || [...(data.speaker || []), ...(data.discussion || [])];
+
 function questionsText({ ts, data }) {
   const out = [`【課後提問 ${ts}】`];
-  if (data.summary) out.push(`本堂重點：${data.summary}`);
-  if (data.speaker?.length) {
-    out.push("", "▍問講者");
-    data.speaker.forEach((x, i) => out.push(`${i + 1}. ${x.type ? `［${x.type}］` : ""}${x.q}`));
-  }
-  if (data.discussion?.length) {
-    out.push("", "▍同學討論");
-    data.discussion.forEach((x, i) => out.push(`${i + 1}. ${x.q}${x.hint ? `（方向：${x.hint}）` : ""}`));
-  }
+  if (data.summary) out.push(`本堂重點：${data.summary}`, "");
+  questionList(data).forEach((x, i) => out.push(`${i + 1}. ${x.q}`));
   return out.join("\n");
 }
 
 function questionsHtml({ ts, data }) {
-  const speaker = (data.speaker || []).map((x) => `
-    <li>${x.type ? `<span class="qtype">${esc(x.type)}</span>` : ""}${esc(x.q)}
-      ${x.context ? `<div class="qnote">對應內容：${esc(x.context)}</div>` : ""}</li>`).join("");
-  const discussion = (data.discussion || []).map((x) => `
-    <li>${esc(x.q)}${x.hint ? `<div class="qnote">討論方向：${esc(x.hint)}</div>` : ""}</li>`).join("");
+  const items = questionList(data).map((x) => `
+    <li>${esc(x.q)}${x.context ? `<div class="qnote">對應內容：${esc(x.context)}</div>` : ""}</li>`).join("");
   return `
     <div class="qhead"><span>💬 課後提問</span><time>${esc(ts)}</time></div>
     ${data.summary ? `<p class="qsummary">本堂重點：${esc(data.summary)}</p>` : ""}
-    ${speaker ? `<h3>🎤 問講者</h3><ol>${speaker}</ol>` : ""}
-    ${discussion ? `<h3>👥 同學討論</h3><ol>${discussion}</ol>` : ""}`;
+    <ol>${items}</ol>`;
 }
 
 function renderQuestions(item, { live = false } = {}) {
@@ -229,7 +222,7 @@ async function genQuestions({ replace = null, card = null } = {}) {
   showTab("narrative");
   placeholder.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
-    const item = { ts: hhmm(), data: await gemini.questions(source) };
+    const item = { ts: hhmm(), data: await gemini.questions(source, cfg.qCount) };
     if (replace) session.questions[session.questions.indexOf(replace)] = item;
     else session.questions.push(item);
     const fresh = renderQuestions(item, { live: true });
@@ -419,6 +412,7 @@ function openSettings() {
   $("#setLang").value = cfg.lang;
   $("#setNarr").value = cfg.narrInt;
   $("#setDiag").value = cfg.diagInt;
+  $("#setQCount").value = cfg.qCount;
   $("#engineNote").textContent = BrowserRecognizer.supported()
     ? "iPhone / iPad：請用 Safari，並開啟「設定 › 一般 › 鍵盤 › 聽寫」。若常中斷，改用 Gemini 音訊辨識。"
     : "⚠ 這個瀏覽器不支援即時辨識，請使用「Gemini 音訊辨識」。";
@@ -433,6 +427,7 @@ function applySettings() {
     lang: $("#setLang").value,
     narrInt: Math.max(60, parseInt($("#setNarr").value, 10) || DEFAULTS.narrInt),
     diagInt: Math.max(60, parseInt($("#setDiag").value, 10) || DEFAULTS.diagInt),
+    qCount: Math.min(20, Math.max(1, parseInt($("#setQCount").value, 10) || DEFAULTS.qCount)),
   };
   const restart = running && (next.engine !== cfg.engine || next.lang !== cfg.lang || next.key !== cfg.key);
   if (next.key !== cfg.key) gemini = next.key ? new Gemini(next.key) : null;
@@ -489,9 +484,13 @@ function bind() {
     const k = $("#setKey");
     k.type = k.type === "password" ? "text" : "password";
   });
-  $("#settings").addEventListener("close", () => {
-    if ($("#settings").returnValue === "save") applySettings();
+  // 直接處理送出（按「儲存」或在欄位中按 Enter），不依賴 dialog 的 close 事件
+  $("#settingsForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    applySettings();
+    $("#settings").close();
   });
+  $("#btnCancel").addEventListener("click", () => $("#settings").close());
   document.querySelectorAll(".tabs button").forEach((b) =>
     b.addEventListener("click", () => showTab(b.dataset.tab)));
   document.addEventListener("visibilitychange", () => {
