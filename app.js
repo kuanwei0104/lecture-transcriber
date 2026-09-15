@@ -162,18 +162,23 @@ const qLabels = (lang) => lang === "en"
 function questionsText({ ts, data, lang }) {
   const L = qLabels(lang);
   const out = [`【${L.title} ${ts}】`];
-  if (data.summary) out.push(`${L.summary}${L.sep}${data.summary}`, "");
-  questionList(data).forEach((x, i) => out.push(`${i + 1}. ${x.q}`));
+  if (data.summary) out.push(`${L.summary}${L.sep}${data.summary}`);
+  if (data.summary_zh) out.push(`本堂重點：${data.summary_zh}`);
+  if (data.summary) out.push("");
+  questionList(data).forEach((x, i) => {
+    out.push(`${i + 1}. ${x.q}`);
+    if (x.q_zh) out.push(`   ${x.q_zh}`);          // 英文課：中文對照
+  });
   return out.join("\n");
 }
 
 function questionsHtml({ ts, data, lang }) {
   const L = qLabels(lang);
   const items = questionList(data).map((x) => `
-    <li>${esc(x.q)}${x.context ? `<div class="qnote">${L.context}${L.sep}${esc(x.context)}</div>` : ""}</li>`).join("");
+    <li>${esc(x.q)}${x.q_zh ? `<div class="qzh" lang="zh-Hant-TW">${esc(x.q_zh)}</div>` : ""}${x.context ? `<div class="qnote">${L.context}${L.sep}${esc(x.context)}</div>` : ""}</li>`).join("");
   return `
     <div class="qhead"><span>💬 課後提問</span><time>${esc(ts)}</time></div>
-    ${data.summary ? `<p class="qsummary">${L.summary}${L.sep}${esc(data.summary)}</p>` : ""}
+    ${data.summary ? `<p class="qsummary">${L.summary}${L.sep}${esc(data.summary)}${data.summary_zh ? `<span class="qzh" lang="zh-Hant-TW">本堂重點：${esc(data.summary_zh)}</span>` : ""}</p>` : ""}
     <ol${lang === "en" ? ' lang="en"' : ""}>${items}</ol>`;
 }
 
@@ -406,6 +411,7 @@ function exportHtml() {
  .questions h3{color:#5b2c8f;margin:12px 0 4px} .questions li{margin:6px 0}
  .qtype{display:inline-block;background:#8e44ad;color:#fff;font-size:.75em;padding:0 6px;border-radius:3px;margin-right:6px}
  .qnote{color:#7f8c8d;font-size:.88em} .qsummary{font-weight:700}
+ .qzh{display:block;color:#4a5a6a;font-weight:400;margin-top:2px}
 </style></head><body>
 <h1>即時課堂轉錄 順稿 ${esc(label)}</h1>
 <div class="ts">匯出時間：${esc(new Date().toLocaleString("zh-TW"))}</div>

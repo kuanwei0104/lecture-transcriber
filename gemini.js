@@ -119,11 +119,12 @@ ${raw}
 
 ${content}
 
-Write follow-up questions that could be asked to the speaker or discussed with classmates. Return JSON, written entirely in English:
+Write follow-up questions that could be asked to the speaker or discussed with classmates. Return JSON:
 {
-  "summary": "One-sentence summary of the key point of the lecture (max 25 words)",
+  "summary": "One-sentence summary of the key point of the lecture, in English (max 25 words)",
+  "summary_zh": "The same summary translated into Traditional Chinese (Taiwan)",
   "questions": [
-    {"q": "Question", "context": "Which part of the lecture it refers to (max 10 words)"}
+    {"q": "Question in English", "q_zh": "The same question translated into Traditional Chinese (Taiwan); keep technical terms in English in parentheses", "context": "Which part of the lecture it refers to, in English (max 10 words)"}
   ]
 }
 
@@ -132,7 +133,7 @@ Rules:
 2. Mix question types: clarifying unclear points, going deeper into underlying principles, real-world applications or examples, reasonable challenges to the argument, open-ended discussion
 3. Be specific and tied to the lecture content; avoid vague questions like "What do you think?"
 4. Max 35 words each, natural enough to ask out loud
-5. The notes may be in Chinese, but ALL output must be in English
+5. The notes may be in Chinese, but "summary", "q" and "context" must be in English; only "summary_zh" and "q_zh" are in Traditional Chinese, as faithful translations
 6. If the content is an ad or small talk, still base the questions on what was actually said`
       : `以下是一堂課／演講的內容（精修順稿與逐字稿）：
 
