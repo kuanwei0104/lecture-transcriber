@@ -22,6 +22,9 @@
   --partial: #8a9bb0;
   --status-bg: #dde6f0;
   --h2-bg: #dceaf6;
+  --q-bg: #faf7ff;
+  --q-border: #d6c7ec;
+  --q-accent: #6c3aa0;
   --font: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Heiti TC", system-ui, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
@@ -30,6 +33,7 @@
     --border: #2c3642; --zh-bg: #16212c; --en-bg: #17201a; --quote-bg: #2a2518; --quote: #e2c46b;
     --term: #7fb3e6; --formula-bg: #2a2033; --formula: #d2a8ff; --partial: #6f8193;
     --status-bg: #1f2833; --h2-bg: #1e2f40;
+    --q-bg: #221c2c; --q-border: #43355a; --q-accent: #c29ff0;
   }
 }
 
@@ -100,6 +104,20 @@ a { color: var(--blue); }
 .narrative strong { color: inherit; }
 .narrative .term { color: var(--term); }
 .narrative .raw { color: var(--dim); }
+
+/* 課後提問 */
+.questions { margin: 24px 0 8px; border: 1px solid var(--q-border); border-radius: 10px; background: var(--q-bg); padding: 4px 18px 12px; }
+.qhead { display: flex; justify-content: space-between; align-items: baseline; font-weight: 700; color: var(--q-accent); font-size: 18px; padding: 8px 0 2px; }
+.qhead time { font-weight: 400; color: var(--dim); font-size: 13px; }
+.questions h3 { color: var(--q-accent); font-size: 16px; margin: 12px 0 4px; }
+.questions ol { margin: 4px 0 4px 1.4em; padding: 0; }
+.questions li { margin: 8px 0; line-height: 1.7; }
+.qsummary { font-weight: 700; margin: 6px 0; }
+.qtype { display: inline-block; background: var(--q-accent); color: #fff; font-size: 12px; line-height: 1.6; padding: 0 6px; border-radius: 3px; margin-right: 6px; vertical-align: 1px; }
+.qnote { color: var(--dim); font-size: 13px; line-height: 1.5; }
+.qactions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.qbtn { background: var(--surface); color: var(--q-accent); border: 1px solid var(--q-border); padding: 6px 12px; font-size: 14px; }
+.qbtn:hover { background: var(--q-border); }
 
 /* 圖解卡片 */
 #diagrams { background: var(--bg); }

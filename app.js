@@ -23,13 +23,14 @@ const emptySession = () => ({
   narr: [],           // [{ts, md}]
   diagrams: [],       // [{ts, spec}]
   titles: [],
+  questions: [],      // [{ts, data}]
   buf: { narr: [], diag: [], xl: [] },
 });
 let session = { ...emptySession(), ...store.get("session", {}) };
 
 let rec = null, running = false, tick = null, wakeLock = null;
 let lastNarr = 0, lastDiag = 0, lastXl = 0;
-let narrBusy = false, diagBusy = false;
+let narrBusy = false, diagBusy = false, questionsBusy = false;
 
 /* ───────────── 狀態列 ───────────── */
 function setStatus(msg, isError = false) {
@@ -149,6 +150,103 @@ async function genNarrative(final = false) {
   }
 }
 
+/* ───────────── 課後提問 ───────────── */
+function questionsText({ ts, data }) {
+  const out = [`【課後提問 ${ts}】`];
+  if (data.summary) out.push(`本堂重點：${data.summary}`);
+  if (data.speaker?.length) {
+    out.push("", "▍問講者");
+    data.speaker.forEach((x, i) => out.push(`${i + 1}. ${x.type ? `［${x.type}］` : ""}${x.q}`));
+  }
+  if (data.discussion?.length) {
+    out.push("", "▍同學討論");
+    data.discussion.forEach((x, i) => out.push(`${i + 1}. ${x.q}${x.hint ? `（方向：${x.hint}）` : ""}`));
+  }
+  return out.join("\n");
+}
+
+function questionsHtml({ ts, data }) {
+  const speaker = (data.speaker || []).map((x) => `
+    <li>${x.type ? `<span class="qtype">${esc(x.type)}</span>` : ""}${esc(x.q)}
+      ${x.context ? `<div class="qnote">對應內容：${esc(x.context)}</div>` : ""}</li>`).join("");
+  const discussion = (data.discussion || []).map((x) => `
+    <li>${esc(x.q)}${x.hint ? `<div class="qnote">討論方向：${esc(x.hint)}</div>` : ""}</li>`).join("");
+  return `
+    <div class="qhead"><span>💬 課後提問</span><time>${esc(ts)}</time></div>
+    ${data.summary ? `<p class="qsummary">本堂重點：${esc(data.summary)}</p>` : ""}
+    ${speaker ? `<h3>🎤 問講者</h3><ol>${speaker}</ol>` : ""}
+    ${discussion ? `<h3>👥 同學討論</h3><ol>${discussion}</ol>` : ""}`;
+}
+
+function renderQuestions(item, { live = false } = {}) {
+  const box = $("#narrative");
+  box.querySelectorAll(".hint").forEach((h) => h.remove());
+  const card = document.createElement("section");
+  card.className = "questions";
+  card.innerHTML = `${questionsHtml(item)}
+    <div class="qactions">
+      <button type="button" class="qbtn" data-act="copy">📋 複製</button>
+      <button type="button" class="qbtn" data-act="regen">🔄 重新產生</button>
+    </div>`;
+  card.querySelector('[data-act="copy"]').addEventListener("click", async (e) => {
+    try {
+      await navigator.clipboard.writeText(questionsText(item));
+      e.target.textContent = "✓ 已複製";
+    } catch {
+      e.target.textContent = "複製失敗";
+    }
+    setTimeout(() => (e.target.textContent = "📋 複製"), 1800);
+  });
+  card.querySelector('[data-act="regen"]').addEventListener("click", () => genQuestions({ replace: item, card }));
+  box.appendChild(card);
+  if (live) {
+    showTab("narrative");
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  return card;
+}
+
+function questionSource() {
+  // 以精修順稿為主；順稿太少時補上原始逐字稿
+  let text = session.narr.map((n) => n.md).join("\n\n");
+  if (text.length < 300) text += "\n\n【逐字稿】\n" + session.lines.map((l) => l.text).join(" ");
+  return text.trim().slice(-30000);
+}
+
+async function genQuestions({ replace = null, card = null } = {}) {
+  if (!gemini || questionsBusy) return;
+  const source = questionSource();
+  if (source.length < 40) return;
+  questionsBusy = true;
+  setStatus("💬 產生課後提問中…");
+  const placeholder = card || (() => {
+    const el = document.createElement("section");
+    el.className = "questions";
+    $("#narrative").appendChild(el);
+    return el;
+  })();
+  placeholder.innerHTML = `<div class="qhead"><span>💬 課後提問</span></div><p class="hint">產生中…</p>`;
+  showTab("narrative");
+  placeholder.scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    const item = { ts: hhmm(), data: await gemini.questions(source) };
+    if (replace) session.questions[session.questions.indexOf(replace)] = item;
+    else session.questions.push(item);
+    const fresh = renderQuestions(item, { live: true });
+    placeholder.replaceWith(fresh);
+    setStatus(running ? "  錄音中…" : "已停止 ✓ 課後提問已產生");
+  } catch (e) {
+    placeholder.innerHTML = `<div class="qhead"><span>💬 課後提問</span></div>
+      <p class="hint">產生失敗：${esc(e.message.slice(0, 100))}</p>
+      <div class="qactions"><button type="button" class="qbtn">🔄 再試一次</button></div>`;
+    placeholder.querySelector("button").addEventListener("click", () => genQuestions({ replace, card: placeholder }));
+    setStatus(`課後提問失敗：${e.message.slice(0, 80)}`, true);
+  } finally {
+    questionsBusy = false;
+    saveSession();
+  }
+}
+
 /* ───────────── 圖解 ───────────── */
 function renderCard({ ts, spec }) {
   const box = $("#diagrams");
@@ -258,6 +356,7 @@ async function stop() {
   $("#narrTimer").textContent = $("#diagTimer").textContent = $("#timers").textContent = "";
   await Promise.all([flushTranslation(), genNarrative(true)]);
   if (!$(".statusbar").classList.contains("error")) setStatus("已停止");
+  await genQuestions();          // 停止後依整堂內容產生課後提問
 }
 
 /* ───────────── 匯出 ───────────── */
@@ -268,6 +367,7 @@ function exportHtml() {
   }
   const blocks = [
     ...session.narr.map((n) => ({ ts: n.ts, html: `<div class="ts">⏱ ${esc(n.ts)}</div>${mdToHtml(n.md)}` })),
+    ...session.questions.map((q) => ({ ts: q.ts + "~", html: `<section class="questions">${questionsHtml(q)}</section>` })),
     ...session.diagrams.map((d) => ({
       ts: d.ts,
       html: `<figure>${renderDiagram(d.spec, d.ts)}<figcaption>${esc(d.ts)} ｜ ${esc(d.spec.title_zh || "")}：${esc(d.spec.concept_zh || "")}</figcaption></figure>`,
@@ -290,6 +390,12 @@ function exportHtml() {
  figure{margin:24px 0} figure svg{width:100%;height:auto;border:1px solid #dde1e7;border-radius:6px}
  figcaption{color:#7f8c8d;font-size:.9em;margin-top:6px;text-align:center}
  details{margin-top:40px} summary{cursor:pointer;color:#2980b9;font-weight:700}
+ .questions{margin:28px 0;border:1px solid #d6c7ec;border-radius:8px;background:#faf7ff;padding:4px 18px 12px}
+ .qhead{display:flex;justify-content:space-between;font-weight:700;color:#5b2c8f;font-size:1.15em;padding:8px 0}
+ .qhead time{font-weight:400;color:#7f8c8d;font-size:.8em}
+ .questions h3{color:#5b2c8f;margin:12px 0 4px} .questions li{margin:6px 0}
+ .qtype{display:inline-block;background:#8e44ad;color:#fff;font-size:.75em;padding:0 6px;border-radius:3px;margin-right:6px}
+ .qnote{color:#7f8c8d;font-size:.88em} .qsummary{font-weight:700}
 </style></head><body>
 <h1>即時課堂轉錄 順稿 ${esc(label)}</h1>
 <div class="ts">匯出時間：${esc(new Date().toLocaleString("zh-TW"))}</div>
@@ -344,10 +450,19 @@ function applyTranslateUi() {
 }
 
 /* ───────────── 初始化 ───────────── */
+function showTab(tab) {
+  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
+  document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("active", p.id === `pane-${tab}`));
+}
+
 function restoreSession() {
+  session.questions ??= [];
   session.lines.forEach((l) => appendLine($("#transcript"), l));
   session.translations.forEach((t) => appendLine($("#translation"), t));
-  session.narr.forEach(renderNarr);
+  [...session.narr.map((n) => ({ ts: n.ts, draw: () => renderNarr(n) })),
+   ...session.questions.map((q) => ({ ts: q.ts + "~", draw: () => renderQuestions(q) }))]   // 同一分鐘時提問排在順稿之後
+    .sort((a, b) => a.ts.localeCompare(b.ts))
+    .forEach((x) => x.draw());
   session.diagrams.forEach((d) => {
     try { renderCard(d); } catch (e) { console.warn(e); }
   });
@@ -377,10 +492,8 @@ function bind() {
   $("#settings").addEventListener("close", () => {
     if ($("#settings").returnValue === "save") applySettings();
   });
-  document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
-    document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
-    document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("active", p.id === `pane-${b.dataset.tab}`));
-  }));
+  document.querySelectorAll(".tabs button").forEach((b) =>
+    b.addEventListener("click", () => showTab(b.dataset.tab)));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && running) {
       keepAwake();
@@ -397,7 +510,7 @@ function bind() {
 
 bind();
 applyTranslateUi();
-$("#pane-transcript").classList.add("active");
+showTab("transcript");
 restoreSession();
 updateEngineLabel();
 setStatus(cfg.key ? "就緒 ✓  按「開始錄音」開始" : "請先在設定中輸入 Gemini API Key");
@@ -409,5 +522,5 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 
 // 測試用：網址加上 ?debug 可從主控台注入文字
 if (new URLSearchParams(location.search).has("debug")) {
-  window.lecture = { onFinal, genNarrative, genDiagram, flushTranslation, session: () => session };
+  window.lecture = { onFinal, genNarrative, genDiagram, genQuestions, flushTranslation, session: () => session };
 }
