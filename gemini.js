@@ -111,13 +111,34 @@ ${raw}
     return { markdown: md, titles };
   }
 
-  async questions(content, count = 8) {
+  async questions(content, count = 8, lang = "zh") {
     const n = Math.min(20, Math.max(1, Math.round(count) || 8));
-    const instr = `以下是一堂課／演講的內容（精修順稿與逐字稿）：
+    const en = lang === "en";
+    const instr = en
+      ? `Below is the content of a lecture/talk (polished notes and/or raw transcript):
 
 ${content}
 
-請根據內容產生「課後提問」，可用來詢問講者或和同學討論。以 JSON 回傳（繁體中文，術語可附英文）：
+Write follow-up questions that could be asked to the speaker or discussed with classmates. Return JSON, written entirely in English:
+{
+  "summary": "One-sentence summary of the key point of the lecture (max 25 words)",
+  "questions": [
+    {"q": "Question", "context": "Which part of the lecture it refers to (max 10 words)"}
+  ]
+}
+
+Rules:
+1. Exactly ${n} questions, not grouped into categories
+2. Mix question types: clarifying unclear points, going deeper into underlying principles, real-world applications or examples, reasonable challenges to the argument, open-ended discussion
+3. Be specific and tied to the lecture content; avoid vague questions like "What do you think?"
+4. Max 35 words each, natural enough to ask out loud
+5. The notes may be in Chinese, but ALL output must be in English
+6. If the content is an ad or small talk, still base the questions on what was actually said`
+      : `以下是一堂課／演講的內容（精修順稿與逐字稿）：
+
+${content}
+
+請根據內容產生「課後提問」，可用來詢問講者或和同學討論。以 JSON 回傳（全部使用繁體中文，術語可附英文）：
 {
   "summary": "一句話總結本堂重點（40字內）",
   "questions": [
@@ -131,7 +152,10 @@ ${content}
 3. 問題要具體、扣緊講稿內容，不要空泛（避免「你怎麼看？」這類問題）
 4. 每題 60 字內，語氣自然、可以直接念出來
 5. 若內容是廣告或閒聊，也照實根據內容出題`;
-    let raw = await this.ask({ system: "你是擅長引導討論的助教，只輸出純 JSON。", parts: [{ text: instr }], smart: true, json: true });
+    const system = en
+      ? "You are a teaching assistant who is great at guiding discussion. Output pure JSON only."
+      : "你是擅長引導討論的助教，只輸出純 JSON。";
+    let raw = await this.ask({ system, parts: [{ text: instr }], smart: true, json: true });
     raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
     const data = JSON.parse(raw);
     if (!data?.questions?.length) throw new Error("問題格式錯誤");

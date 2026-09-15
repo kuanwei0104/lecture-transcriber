@@ -155,20 +155,26 @@ async function genNarrative(final = false) {
 // 舊資料（分成 speaker / discussion）也合併成單一清單
 const questionList = (data) => data.questions || [...(data.speaker || []), ...(data.discussion || [])];
 
-function questionsText({ ts, data }) {
-  const out = [`【課後提問 ${ts}】`];
-  if (data.summary) out.push(`本堂重點：${data.summary}`, "");
+const qLabels = (lang) => lang === "en"
+  ? { summary: "Key point", context: "Context", title: "Questions", sep: ": " }
+  : { summary: "本堂重點", context: "對應內容", title: "課後提問", sep: "：" };
+
+function questionsText({ ts, data, lang }) {
+  const L = qLabels(lang);
+  const out = [`【${L.title} ${ts}】`];
+  if (data.summary) out.push(`${L.summary}${L.sep}${data.summary}`, "");
   questionList(data).forEach((x, i) => out.push(`${i + 1}. ${x.q}`));
   return out.join("\n");
 }
 
-function questionsHtml({ ts, data }) {
+function questionsHtml({ ts, data, lang }) {
+  const L = qLabels(lang);
   const items = questionList(data).map((x) => `
-    <li>${esc(x.q)}${x.context ? `<div class="qnote">對應內容：${esc(x.context)}</div>` : ""}</li>`).join("");
+    <li>${esc(x.q)}${x.context ? `<div class="qnote">${L.context}${L.sep}${esc(x.context)}</div>` : ""}</li>`).join("");
   return `
     <div class="qhead"><span>💬 課後提問</span><time>${esc(ts)}</time></div>
-    ${data.summary ? `<p class="qsummary">本堂重點：${esc(data.summary)}</p>` : ""}
-    <ol>${items}</ol>`;
+    ${data.summary ? `<p class="qsummary">${L.summary}${L.sep}${esc(data.summary)}</p>` : ""}
+    <ol${lang === "en" ? ' lang="en"' : ""}>${items}</ol>`;
 }
 
 function renderQuestions(item, { live = false } = {}) {
@@ -199,16 +205,27 @@ function renderQuestions(item, { live = false } = {}) {
   return card;
 }
 
-function questionSource() {
-  // 以精修順稿為主；順稿太少時補上原始逐字稿
+// 依逐字稿內容判斷上課語言：英文單字比中文字多就視為英文課
+function lectureLang() {
+  const text = session.lines.map((l) => l.text).join(" ");
+  const cjk = (text.match(/[\u3400-\u9fff]/g) || []).length;
+  const words = (text.match(/[A-Za-z]+(?:['’][A-Za-z]+)?/g) || []).length;
+  if (cjk + words < 20) return cfg.lang.startsWith("en") ? "en" : "zh";
+  return words > cjk ? "en" : "zh";
+}
+
+function questionSource(lang) {
+  // 中文課以精修順稿為主；英文課另附原始英文逐字稿，讓問題貼近原本用語
   let text = session.narr.map((n) => n.md).join("\n\n");
-  if (text.length < 300) text += "\n\n【逐字稿】\n" + session.lines.map((l) => l.text).join(" ");
-  return text.trim().slice(-30000);
+  const transcript = session.lines.map((l) => l.text).join(" ");
+  if (lang === "en" || text.length < 300) text += "\n\n【Transcript / 逐字稿】\n" + transcript;
+  return text.trim().slice(-60000);
 }
 
 async function genQuestions({ replace = null, card = null } = {}) {
   if (!gemini || questionsBusy) return;
-  const source = questionSource();
+  const lang = lectureLang();
+  const source = questionSource(lang);
   if (source.length < 40) return;
   questionsBusy = true;
   setStatus("💬 產生課後提問中…");
@@ -222,7 +239,7 @@ async function genQuestions({ replace = null, card = null } = {}) {
   showTab("narrative");
   placeholder.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
-    const item = { ts: hhmm(), data: await gemini.questions(source, cfg.qCount) };
+    const item = { ts: hhmm(), lang, data: await gemini.questions(source, cfg.qCount, lang) };
     if (replace) session.questions[session.questions.indexOf(replace)] = item;
     else session.questions.push(item);
     const fresh = renderQuestions(item, { live: true });
