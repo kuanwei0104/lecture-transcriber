@@ -170,4 +170,13 @@ dialog h2 { margin: 0 0 12px; color: var(--blue); font-size: 20px; }
 .row.two { gap: 14px; }
 .row.two .field { flex: 1; }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.dlg-note { color: var(--dim); margin: 0 0 12px; line-height: 1.6; }
+.export-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 480px) { .export-choices { grid-template-columns: 1fr; } }
+.export-btn { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; text-align: left; padding: 14px; background: var(--zh-bg); color: var(--text); border: 1px solid var(--border); border-radius: 10px; }
+.export-btn strong { font-size: 17px; color: var(--blue); }
+.export-btn small { color: var(--dim); line-height: 1.4; }
+.export-btn:hover:not(:disabled) { border-color: var(--blue); }
+.export-btn:disabled { opacity: .55; cursor: progress; }
+.dlg-status { min-height: 1.6em; margin: 12px 0 0; color: var(--green); font-weight: 700; }
 .dlg-actions .ghost { background: var(--bg); color: var(--text); }

@@ -114,6 +114,25 @@
   </form>
 </dialog>
 
+<dialog id="exportDlg">
+  <form method="dialog" onsubmit="return false">
+    <h2>匯出順稿</h2>
+    <p class="dlg-note">選擇要下載的版本（HTML 檔，含順稿、圖解、課後提問與原始逐字稿）。</p>
+    <div class="export-choices">
+      <button type="button" class="export-btn" data-lang="zh">
+        <strong>📄 中文版</strong><small>繁體中文</small>
+      </button>
+      <button type="button" class="export-btn" data-lang="en">
+        <strong>📄 English 版</strong><small>第一次匯出會先用 Gemini 翻譯，約需數十秒</small>
+      </button>
+    </div>
+    <p id="exportStatus" class="dlg-status" role="status"></p>
+    <div class="dlg-actions">
+      <button type="button" id="btnExportClose" class="ghost">關閉</button>
+    </div>
+  </form>
+</dialog>
+
 <script type="module" src="app.js"></script>
 </body>
 </html>

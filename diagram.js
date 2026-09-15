@@ -48,6 +48,9 @@ export function renderDiagram(spec, ts = "") {
   let panels = (Array.isArray(spec.panels) ? spec.panels : []).filter((p) => p && typeof p === "object").slice(0, 3);
   const flow = (Array.isArray(spec.flow) ? spec.flow : []).map(String).filter((s) => s.trim()).slice(0, 5);
   const formula = String(spec.formula || "").trim();
+  // 內容沒有中文（例如匯出 English 版時）就改用英文標籤
+  const isEn = !/[㐀-鿿]/.test(JSON.stringify(spec));
+  const [flowLabel, formulaLabel] = isEn ? ["Process / Relationship", "Formula"] : ["流程 / 關係", "公式"];
   if (!panels.length) panels = [{ heading: "重點摘要", bullets: wrap(spec.concept_zh || "", 40).slice(0, 6) }];
 
   const top = 178, bottom = H - 40;
@@ -87,7 +90,7 @@ export function renderDiagram(spec, ts = "") {
     const rx = W - 40 - rightW, cx = rx + rightW / 2;
     const flowBottom = bottom - (formula ? 150 : 0);
     if (flow.length) {
-      text(cx, top, "流程 / 關係", 28, NAVY, { bold: true, anchor: "middle" });
+      text(cx, top, flowLabel, 28, NAVY, { bold: true, anchor: "middle" });
       const areaTop = top + 50, k = flow.length, arrow = 34;
       const bh = Math.min(110, (flowBottom - areaTop - arrow * (k - 1)) / k);
       flow.forEach((step, i) => {
@@ -106,7 +109,7 @@ export function renderDiagram(spec, ts = "") {
     if (formula) {
       const fy = flow.length ? bottom - 130 : top;
       rect(rx, fy, rightW, 130, "#f4ecf7", "#6a1b9a", 2);
-      text(rx + 20, fy + 14, "公式", 22, "#6a1b9a", { bold: true });
+      text(rx + 20, fy + 14, formulaLabel, 22, "#6a1b9a", { bold: true });
       let ly = fy + 52;
       for (const ln of wrap(formula, (rightW - 40) / 26).slice(0, 2)) { text(rx + 20, ly, ln, 28, "#4a148c", { bold: true }); ly += 36; }
     }

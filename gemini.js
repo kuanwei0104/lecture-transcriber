@@ -63,6 +63,31 @@ export class Gemini {
     return this.ask({ system, parts: [{ text }] });
   }
 
+  // 匯出用：翻譯 markdown 順稿，保留格式
+  async translateMarkdown(md, target) {
+    const system = target === "en"
+      ? `You are an academic translator. Translate the lecture notes below into natural academic English.
+Rules: keep the Markdown structure exactly (## headings, **bold**, \`code\`, > quotes, numbered and bulleted lists, line breaks);
+write terms like 紊流（Turbulence） simply as the English term; keep formulas unchanged;
+if a line already has parallel Chinese and English versions, keep only the English; output only the translated Markdown.`
+      : `你是學術翻譯。把以下課堂筆記翻譯成自然流暢的繁體中文（台灣用語）。
+規則：完整保留 Markdown 結構（## 標題、**粗體**、\`程式碼\`、> 引文、列表、換行）；專有名詞第一次出現時附英文，如：長期增強作用（LTP）；公式保持原樣；
+若某行已同時有中英對照，只保留中文；只輸出翻譯後的 Markdown。`;
+    let out = await this.ask({ system, parts: [{ text: md }], smart: true });
+    return out.replace(/^```(?:markdown|md)?\s*/i, "").replace(/```\s*$/, "").trim();
+  }
+
+  // 匯出用：翻譯 JSON 裡所有文字值（圖解、課後提問），鍵名與結構不變
+  async translateJson(obj, target) {
+    const lang = target === "en" ? "natural academic English" : "繁體中文（台灣用語），專有名詞可附英文";
+    const raw = await this.ask({
+      system: "You are an academic translator. Output pure JSON only.",
+      parts: [{ text: `Translate every string value in this JSON into ${lang}. Keep all keys, array lengths and structure identical; keep formulas unchanged.\n\n${JSON.stringify(obj)}` }],
+      smart: true, json: true,
+    });
+    return JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""));
+  }
+
   async transcribeAudio(base64Wav, lang) {
     const prompt = lang.startsWith("zh")
       ? "請把這段課堂錄音逐字轉寫成繁體中文（英文術語保留英文）。只輸出講者說的話，不要加任何說明、標題或時間戳。若沒有可辨識的語音，輸出空字串。"

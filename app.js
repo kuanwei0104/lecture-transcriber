@@ -374,29 +374,91 @@ async function stop() {
   await genQuestions();          // 停止後依整堂內容產生課後提問
 }
 
-/* ───────────── 匯出 ───────────── */
+/* ───────────── 匯出（中文版 / English 版） ───────────── */
+const EXPORT_TEXT = {
+  zh: { htmlLang: "zh-Hant-TW", title: "即時課堂轉錄 順稿", exported: "匯出時間：", transcript: "原始逐字稿",
+        file: "順稿_中文", locale: "zh-TW", sep: "：" },
+  en: { htmlLang: "en", title: "Lecture Notes", exported: "Exported: ", transcript: "Original transcript",
+        file: "LectureNotes_English", locale: "en-US", sep: ": " },
+};
+
+function hasContent() {
+  return session.narr.length || session.diagrams.length || session.lines.length || session.questions.length;
+}
+
 function exportHtml() {
-  if (!session.narr.length && !session.diagrams.length && !session.lines.length) {
-    alert("尚無內容可匯出。請先進行錄音。");
-    return;
+  if (!hasContent()) { alert("尚無內容可匯出。請先進行錄音。"); return; }
+  $("#exportStatus").textContent = "";
+  $("#exportDlg").showModal();
+}
+
+// 同時最多 limit 個翻譯請求，避免超過免費額度的每分鐘上限
+async function mapLimit(items, limit, fn) {
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+// 問題卡片在匯出檔中只保留單一語言
+function questionsFor(q, lang) {
+  const src = q.lang || "zh";
+  if (src === lang) {
+    const { summary, questions, speaker, discussion } = q.data;
+    return Promise.resolve({ summary, questions: questionList({ questions, speaker, discussion })
+      .map(({ q: text, context }) => ({ q: text, context })) });
   }
+  const key = `data_${lang}`;
+  if (q[key]) return Promise.resolve(q[key]);
+  if (lang === "zh" && questionList(q.data).every((x) => x.q_zh)) {
+    // 英文課已有中文對照：直接使用，只需翻譯「對應內容」；無法翻譯時就省略對應內容
+    const zh = { summary: q.data.summary_zh || q.data.summary,
+                 questions: questionList(q.data).map((x) => ({ q: x.q_zh, context: x.context || "" })) };
+    const noContext = { ...zh, questions: zh.questions.map(({ q: text }) => ({ q: text })) };
+    if (!gemini) return Promise.resolve(noContext);
+    return gemini.translateJson(zh, "zh").then((d) => (q[key] = d)).catch(() => noContext);
+  }
+  const plain = { summary: q.data.summary, questions: questionList(q.data).map((x) => ({ q: x.q, context: x.context || "" })) };
+  return gemini.translateJson(plain, lang).then((d) => (q[key] = d));
+}
+
+async function buildExport(lang, progress) {
+  const T = EXPORT_TEXT[lang];
+  const narrSrc = session.narr;                         // 順稿一律是中文
+  const jobs = [];
+  if (lang === "en") {
+    narrSrc.forEach((n) => { if (!n.md_en) jobs.push(async () => { n.md_en = await gemini.translateMarkdown(n.md, "en"); }); });
+    session.diagrams.forEach((d) => { if (!d.spec_en) jobs.push(async () => { d.spec_en = await gemini.translateJson(d.spec, "en"); }); });
+  }
+  session.questions.forEach((q) => {
+    if ((q.lang || "zh") !== lang && !q[`data_${lang}`]) jobs.push(() => questionsFor(q, lang));
+  });
+  let done = 0;
+  progress(jobs.length ? `翻譯中… 0 / ${jobs.length}` : "");
+  await mapLimit(jobs, 3, async (job) => { await job(); progress(`翻譯中… ${++done} / ${jobs.length}`); });
+  saveSession();
+
+  const qBlocks = await Promise.all(session.questions.map(async (q) => ({
+    ts: q.ts + "~",
+    html: `<section class="questions">${questionsHtml({ ts: q.ts, lang, data: await questionsFor(q, lang) })}</section>`,
+  })));
   const blocks = [
-    ...session.narr.map((n) => ({ ts: n.ts, html: `<div class="ts">⏱ ${esc(n.ts)}</div>${mdToHtml(n.md)}` })),
-    ...session.questions.map((q) => ({ ts: q.ts + "~", html: `<section class="questions">${questionsHtml(q)}</section>` })),
-    ...session.diagrams.map((d) => ({
-      ts: d.ts,
-      html: `<figure>${renderDiagram(d.spec, d.ts)}<figcaption>${esc(d.ts)} ｜ ${esc(d.spec.title_zh || "")}：${esc(d.spec.concept_zh || "")}</figcaption></figure>`,
-    })),
+    ...narrSrc.map((n) => ({ ts: n.ts, html: `<div class="ts">⏱ ${esc(n.ts)}</div>${mdToHtml(lang === "en" ? n.md_en : n.md)}` })),
+    ...qBlocks,
+    ...session.diagrams.map((d) => {
+      const spec = lang === "en" ? d.spec_en : d.spec;
+      return { ts: d.ts, html: `<figure>${renderDiagram(spec, d.ts)}<figcaption>${esc(d.ts)} ｜ ${esc(spec.title_zh || "")}${T.sep}${esc(spec.concept_zh || "")}</figcaption></figure>` };
+    }),
   ].sort((a, b) => a.ts.localeCompare(b.ts));
+
   const started = session.started ? new Date(session.started) : new Date();
-  const label = `${started.toLocaleDateString("zh-TW")} ${hhmm(started)}`;
+  const label = `${started.toLocaleDateString(T.locale)} ${hhmm(started)}`;
   const transcript = session.lines.map((l) => `<p><span class="ts">[${esc(l.ts)}]</span> ${esc(l.text)}</p>`).join("\n");
-  const doc = `<!doctype html>
-<html lang="zh-Hant-TW"><head><meta charset="utf-8">
+  return `<!doctype html>
+<html lang="${T.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>即時課堂轉錄 順稿 ${esc(label)}</title>
+<title>${T.title} ${esc(label)}</title>
 <style>
- body{font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;max-width:860px;margin:40px auto;padding:0 20px;color:#2c3e50;background:#fdfcf7;line-height:1.85}
+ body{font-family:${lang === "en" ? `Georgia,"Segoe UI",` : ""}"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;max-width:860px;margin:40px auto;padding:0 20px;color:#2c3e50;background:#fdfcf7;line-height:1.85}
  h1{color:#1a252f;border-bottom:3px solid #2980b9;padding-bottom:8px}
  h2{color:#1f4e79;margin-top:32px;padding:6px 12px;background:#dceaf6;border-left:5px solid #2980b9}
  p{margin:8px 0} blockquote{border-left:4px solid #f39c12;background:#fdf6e3;color:#7d6608;padding:8px 14px;margin:10px 0}
@@ -408,24 +470,40 @@ function exportHtml() {
  .questions{margin:28px 0;border:1px solid #d6c7ec;border-radius:8px;background:#faf7ff;padding:4px 18px 12px}
  .qhead{display:flex;justify-content:space-between;font-weight:700;color:#5b2c8f;font-size:1.15em;padding:8px 0}
  .qhead time{font-weight:400;color:#7f8c8d;font-size:.8em}
- .questions h3{color:#5b2c8f;margin:12px 0 4px} .questions li{margin:6px 0}
- .qtype{display:inline-block;background:#8e44ad;color:#fff;font-size:.75em;padding:0 6px;border-radius:3px;margin-right:6px}
- .qnote{color:#7f8c8d;font-size:.88em} .qsummary{font-weight:700}
- .qzh{display:block;color:#4a5a6a;font-weight:400;margin-top:2px}
+ .questions li{margin:6px 0} .qnote{color:#7f8c8d;font-size:.88em} .qsummary{font-weight:700}
 </style></head><body>
-<h1>即時課堂轉錄 順稿 ${esc(label)}</h1>
-<div class="ts">匯出時間：${esc(new Date().toLocaleString("zh-TW"))}</div>
+<h1>${T.title} ${esc(label)}</h1>
+<div class="ts">${T.exported}${esc(new Date().toLocaleString(T.locale))}</div>
 ${blocks.map((b) => b.html).join("\n")}
-${transcript ? `<details><summary>原始逐字稿</summary>${transcript}</details>` : ""}
+${transcript ? `<details><summary>${T.transcript}</summary>${transcript}</details>` : ""}
 </body></html>`;
-  const d = new Date();
-  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}_${hhmmss(d).replace(/:/g, "")}`;
+}
+
+function download(doc, name) {
   const url = URL.createObjectURL(new Blob([doc], { type: "text/html;charset=utf-8" }));
-  const a = Object.assign(document.createElement("a"), { href: url, download: `順稿_${stamp}.html` });
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+async function doExport(lang) {
+  const status = $("#exportStatus");
+  const buttons = document.querySelectorAll("#exportDlg [data-lang]");
+  if (lang === "en" && !gemini) { status.textContent = "English 版需要翻譯，請先在設定中輸入 Gemini API Key。"; return; }
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const doc = await buildExport(lang, (m) => (status.textContent = m));
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}_${hhmmss(d).replace(/:/g, "")}`;
+    download(doc, `${EXPORT_TEXT[lang].file}_${stamp}.html`);
+    status.textContent = lang === "en" ? "✓ English 版已下載" : "✓ 中文版已下載";
+  } catch (e) {
+    status.textContent = `匯出失敗：${e.message.slice(0, 100)}`;
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
 }
 
 /* ───────────── 設定 ───────────── */
@@ -491,6 +569,9 @@ function bind() {
   $("#btnRec").addEventListener("click", () => (running ? stop() : start()));
   $("#btnSettings").addEventListener("click", openSettings);
   $("#btnExport").addEventListener("click", exportHtml);
+  document.querySelectorAll("#exportDlg [data-lang]").forEach((b) =>
+    b.addEventListener("click", () => doExport(b.dataset.lang)));
+  $("#btnExportClose").addEventListener("click", () => $("#exportDlg").close());
   $("#btnNew").addEventListener("click", async () => {
     if (!confirm("清除目前的逐字稿、順稿與圖解，開始新課程？（建議先匯出 HTML）")) return;
     if (running) await stop();
