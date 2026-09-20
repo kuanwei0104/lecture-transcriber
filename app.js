@@ -1,6 +1,6 @@
 import { $, esc, hhmmss, hhmm, collapseRepeats, store, mdToHtml } from "./util.js";
 import { Gemini } from "./gemini.js";
-import { renderDiagram } from "./diagram.js";
+import { renderDiagram, renderMindmap } from "./diagram.js";
 import { BrowserRecognizer, GeminiAudioRecognizer } from "./recognizers.js";
 
 const TRANSLATE_INTERVAL = 20_000;
@@ -385,9 +385,9 @@ async function stop() {
 /* ───────────── 匯出（中文版 / English 版） ───────────── */
 const EXPORT_TEXT = {
   zh: { htmlLang: "zh-Hant-TW", title: "即時課堂轉錄 順稿", exported: "匯出時間：", transcript: "原始逐字稿",
-        file: "順稿_中文", locale: "zh-TW", sep: "：" },
+        mindmap: "課程心智圖", file: "順稿_中文", locale: "zh-TW", sep: "：" },
   en: { htmlLang: "en", title: "Lecture Notes", exported: "Exported: ", transcript: "Original transcript",
-        file: "LectureNotes_English", locale: "en-US", sep: ": " },
+        mindmap: "Mind map", file: "LectureNotes_English", locale: "en-US", sep: ": " },
 };
 
 function hasContent() {
@@ -446,9 +446,21 @@ async function buildExport(lang, progress) {
   session.questions.forEach((q) => {
     if ((q.lang || "zh") !== lang && !q[`data_${lang}`]) jobs.push(() => questionsFor(q, lang));
   });
+  // 整堂課的心智圖（內容有變才重新產生）
+  session.mindmaps ??= {};
+  const stamp = `${session.narr.length}:${session.lines.length}`;
+  if (gemini && session.mindmaps[lang]?.stamp !== stamp) {
+    jobs.push(async () => {
+      try {
+        session.mindmaps[lang] = { stamp, tree: await gemini.mindmap(questionSource(lang), lang) };
+      } catch (e) {
+        console.warn("[Mindmap]", e.message);       // 失敗就略過心智圖，不影響其他內容
+      }
+    });
+  }
   let done = 0;
-  progress(jobs.length ? `翻譯中… 0 / ${jobs.length}` : "");
-  await mapLimit(jobs, 3, async (job) => { await job(); progress(`翻譯中… ${++done} / ${jobs.length}`); });
+  progress(jobs.length ? `整理中… 0 / ${jobs.length}` : "");
+  await mapLimit(jobs, 3, async (job) => { await job(); progress(`整理中… ${++done} / ${jobs.length}`); });
   saveSession();
 
   const qBlocks = await Promise.all(session.questions.map(async (q) => ({
@@ -464,6 +476,10 @@ async function buildExport(lang, progress) {
     }),
   ].sort((a, b) => a.ts.localeCompare(b.ts));
 
+  const tree = session.mindmaps?.[lang]?.tree;
+  const mindmapHtml = tree
+    ? `<figure class="mindmap"><h2>${T.mindmap}</h2>${renderMindmap(tree)}</figure>`
+    : "";
   const started = session.started ? new Date(session.started) : new Date();
   const label = `${started.toLocaleDateString(T.locale)} ${hhmm(started)}`;
   const transcript = session.lines.map((l) => `<p><span class="ts">[${esc(l.ts)}]</span> ${esc(l.text)}</p>`).join("\n");
@@ -479,6 +495,7 @@ async function buildExport(lang, progress) {
  code{background:#f4ecf7;color:#6a1b9a;padding:1px 6px;border-radius:3px;font-family:Consolas,monospace}
  .term{color:#0b5394} .ts{color:#7f8c8d;font-size:.85em;margin-top:20px}
  figure{margin:24px 0} figure svg{width:100%;height:auto;border:1px solid #dde1e7;border-radius:6px}
+ .mindmap{margin:24px 0 36px} .mindmap h2{margin-bottom:10px}
  figcaption{color:#7f8c8d;font-size:.9em;margin-top:6px;text-align:center}
  details{margin-top:40px} summary{cursor:pointer;color:#2980b9;font-weight:700}
  .questions{margin:28px 0;border:1px solid #d6c7ec;border-radius:8px;background:#faf7ff;padding:4px 18px 12px}
@@ -488,6 +505,7 @@ async function buildExport(lang, progress) {
 </style></head><body>
 <h1>${T.title} ${esc(label)}</h1>
 <div class="ts">${T.exported}${esc(new Date().toLocaleString(T.locale))}</div>
+${mindmapHtml}
 ${blocks.map((b) => b.html).join("\n")}
 ${transcript ? `<details><summary>${T.transcript}</summary>${transcript}</details>` : ""}
 </body></html>`;

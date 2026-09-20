@@ -120,3 +120,87 @@ export function renderDiagram(spec, ts = "") {
 ${el.join("\n")}
 </svg>`;
 }
+
+/* ───────────── 心智圖（左右分支，輸出 SVG） ───────────── */
+const MM_COLORS = ["#2980b9", "#16a085", "#8e44ad", "#c0392b", "#d68910", "#0b7285", "#6c3aa0"];
+const MM_PAD = 40;
+
+function mmBox(text, px, maxEm, { padX = 16, padY = 10 } = {}) {
+  const lines = wrap(text, maxEm);
+  const w = Math.max(...lines.map(strW)) * px + padX * 2;
+  const lh = px * 1.35;
+  return { lines, px, lh, w, h: lines.length * lh + padY * 2 };
+}
+
+export function renderMindmap(tree, { fontFamily = FONT } = {}) {
+  const root = mmBox(String(tree.root || ""), 34, 14, { padX: 26, padY: 16 });
+  const branches = (tree.branches || []).slice(0, 8).map((b, i) => {
+    const box = mmBox(String(b.title || ""), 26, 12, { padX: 18, padY: 12 });
+    const children = (b.children || []).slice(0, 6).map((c) => mmBox(String(c), 20, 18));
+    const gapY = 14;
+    const childrenH = children.reduce((a, c) => a + c.h + gapY, -gapY);
+    return { ...box, color: MM_COLORS[i % MM_COLORS.length], children, childrenH: Math.max(0, childrenH),
+             h2: Math.max(box.h, Math.max(0, childrenH)) };
+  });
+
+  // 依序把分支放到目前較短的一側，讓左右高度平衡
+  const gapBranch = 34, gapX = 70;
+  const sides = [[], []];                                          // [右, 左]
+  const used = [0, 0];
+  branches.forEach((b) => {
+    const s = used[0] <= used[1] ? 0 : 1;
+    sides[s].push(b);
+    used[s] += b.h2 + gapBranch;
+  });
+  const sideH = sides.map((s) => s.reduce((a, b) => a + b.h2 + gapBranch, -gapBranch));
+  const height = Math.max(root.h + 80, ...sideH.map((h) => Math.max(h, 0)) ) + MM_PAD * 2;
+  const cy = height / 2;
+
+  const el = [];
+  const put = (box, x, y, { fill, stroke, color = "#fff", bold = false, rx = 12 }) => {
+    el.push(`<rect x="${x}" y="${y}" width="${box.w}" height="${box.h}" rx="${rx}" fill="${fill}" stroke="${stroke || "none"}" stroke-width="2"/>`);
+    let ty = y + (box.h - box.lines.length * box.lh) / 2 + box.lh / 2;
+    for (const ln of box.lines) {
+      el.push(`<text x="${x + box.w / 2}" y="${ty}" font-size="${box.px}" fill="${color}" text-anchor="middle" dominant-baseline="central"${bold ? ' font-weight="700"' : ""}>${esc(ln)}</text>`);
+      ty += box.lh;
+    }
+  };
+  const curve = (x1, y1, x2, y2, color) => {
+    const mx = (x1 + x2) / 2;
+    el.push(`<path d="M${x1} ${y1} C${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`);
+  };
+
+  // 先以中心為原點排版，最後再平移
+  const rootX = -root.w / 2, rootY = cy - root.h / 2;
+  let minX = rootX, maxX = rootX + root.w;
+
+  sides.forEach((side, s) => {
+    const dir = s === 0 ? 1 : -1;                    // 1 = 右，-1 = 左
+    let y = cy - (side.reduce((a, b) => a + b.h2 + gapBranch, -gapBranch)) / 2;
+    for (const b of side) {
+      const bx = dir === 1 ? root.w / 2 + gapX : -root.w / 2 - gapX - b.w;
+      const by = y + (b.h2 - b.h) / 2;
+      curve(dir === 1 ? root.w / 2 : -root.w / 2, cy, dir === 1 ? bx : bx + b.w, by + b.h / 2, b.color);
+      put(b, bx, by, { fill: b.color, bold: true });
+      minX = Math.min(minX, bx); maxX = Math.max(maxX, bx + b.w);
+
+      let cyy = y + (b.h2 - b.childrenH) / 2;
+      for (const c of b.children) {
+        const cx = dir === 1 ? bx + b.w + gapX : bx - gapX - c.w;
+        curve(dir === 1 ? bx + b.w : bx, by + b.h / 2, dir === 1 ? cx : cx + c.w, cyy + c.h / 2, b.color);
+        put(c, cx, cyy, { fill: "#fff", stroke: b.color, color: "#2c3e50", rx: 10 });
+        minX = Math.min(minX, cx); maxX = Math.max(maxX, cx + c.w);
+        cyy += c.h + 14;
+      }
+      y += b.h2 + gapBranch;
+    }
+  });
+
+  put(root, rootX, rootY, { fill: NAVY, bold: true, rx: 18 });
+
+  const width = maxX - minX + MM_PAD * 2;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX - MM_PAD} 0 ${width} ${height}" font-family='${fontFamily}' role="img" aria-label="${esc(tree.root || "mind map")}">
+<rect x="${minX - MM_PAD}" y="0" width="${width}" height="${height}" fill="${CREAM}"/>
+${el.join("\n")}
+</svg>`;
+}

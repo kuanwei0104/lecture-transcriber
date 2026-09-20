@@ -63,6 +63,51 @@ export class Gemini {
     return this.ask({ system, parts: [{ text }] });
   }
 
+  // 匯出用：整堂課的心智圖結構
+  async mindmap(content, lang = "zh") {
+    const instr = lang === "en"
+      ? `Below is the full content of a lecture (polished notes and/or transcript):
+
+${content}
+
+Summarise the whole lecture as a mind map. Return JSON, written entirely in English:
+{
+  "root": "Central topic (max 5 words)",
+  "branches": [
+    {"title": "Main branch (max 4 words)", "children": ["Key point (max 7 words)", "..."]}
+  ]
+}
+
+Rules:
+1. 4–7 branches covering the whole lecture in the order it was taught
+2. 2–5 children per branch; keep formulas and technical terms as they were said
+3. Keep every label short — this is a diagram, not sentences
+4. Only use what is in the lecture; do not invent content`
+      : `以下是一堂課的完整內容（精修順稿與逐字稿）：
+
+${content}
+
+請把整堂課整理成一張心智圖。以 JSON 回傳（全部使用繁體中文，術語可保留英文）：
+{
+  "root": "中心主題（8字內）",
+  "branches": [
+    {"title": "主要分支（6字內）", "children": ["重點（12字內）", "..."]}
+  ]
+}
+
+規則：
+1. 依授課順序給 4–7 個分支，涵蓋整堂課
+2. 每個分支 2–5 個子項目；公式與術語照原樣保留
+3. 標籤要短，這是圖不是句子
+4. 只根據課堂內容，不要捏造`;
+    const raw = await this.ask({ system: lang === "en" ? "You are an expert at structuring lecture content. Output pure JSON only."
+                                                       : "你是擅長整理課程架構的助教，只輸出純 JSON。",
+                                 parts: [{ text: instr }], smart: true, json: true });
+    const tree = JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""));
+    if (!tree?.branches?.length) throw new Error("心智圖格式錯誤");
+    return tree;
+  }
+
   // 匯出用：翻譯 markdown 順稿，保留格式
   async translateMarkdown(md, target) {
     const system = target === "en"
