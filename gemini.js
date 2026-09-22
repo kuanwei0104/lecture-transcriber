@@ -24,8 +24,10 @@ export class Gemini {
     if (json) body.generationConfig = { responseMimeType: "application/json" };
     let last;
     for (let attempt = 0; attempt < 2; attempt++) {
+      let tried = 0, quota = 0;
       for (const model of chain) {
         if (this.dead.has(model)) continue;
+        tried++;
         try {
           const r = await fetch(`${BASE}${model}:generateContent`, {
             method: "POST",
@@ -48,10 +50,12 @@ export class Gemini {
         } catch (e) {
           if (e instanceof FatalError) throw e;
           last = e;
+          if (/429|RESOURCE_EXHAUSTED|quota/i.test(e.message)) quota++;
           console.warn(`[Gemini] ${model}:`, e.message);
         }
       }
-      if (attempt === 0) await sleep(4000);   // 可能是暫時性 429 / 503
+      if (quota && quota === tried) break;     // 每個模型都說額度用完，再試也沒用
+      if (attempt === 0) await sleep(4000);    // 可能是暫時性 429 / 503
     }
     throw new Error(`Gemini 所有模型都失敗：${last?.message || "沒有可用的模型"}`);
   }

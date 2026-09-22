@@ -132,11 +132,47 @@ function mmBox(text, px, maxEm, { padX = 16, padY = 10 } = {}) {
   return { lines, px, lh, w, h: lines.length * lh + padY * 2 };
 }
 
-export function renderMindmap(tree, { fontFamily = FONT } = {}) {
-  const root = mmBox(String(tree.root || ""), 34, 14, { padX: 26, padY: 16 });
-  const branches = (tree.branches || []).slice(0, 8).map((b, i) => {
-    const box = mmBox(String(b.title || ""), 26, 12, { padX: 18, padY: 12 });
-    const children = (b.children || []).slice(0, 6).map((c) => mmBox(String(c), 20, 18));
+// Gemini 偶爾回傳不同形狀（分支是陣列或字串），先統一格式
+function mmText(x) {
+  if (x && typeof x === "object" && !Array.isArray(x)) {
+    for (const k of ["title", "text", "name", "label", "value", "point"]) if (x[k]) return String(x[k]);
+    const v = Object.values(x).find((y) => typeof y === "string" || typeof y === "number");
+    return v == null ? "" : String(v);
+  }
+  if (Array.isArray(x)) return x.map(mmText).filter(Boolean).join("、");
+  return x == null ? "" : String(x);
+}
+
+function mmNormalize(tree) {
+  if (Array.isArray(tree)) tree = { branches: tree };
+  if (!tree || typeof tree !== "object") tree = {};
+  const root = mmText(tree.root || tree.title || tree.topic || "");
+  let raw = tree.branches || tree.children || tree.nodes || [];
+  if (!Array.isArray(raw)) raw = [raw];
+  const branches = [];
+  for (const b of raw) {
+    let title, kids;
+    if (b && typeof b === "object" && !Array.isArray(b)) {
+      title = mmText(b);
+      kids = b.children || b.items || b.points || b.nodes || [];
+    } else if (Array.isArray(b) && b.length) {
+      title = mmText(b[0]); kids = b.slice(1);
+    } else {
+      title = mmText(b); kids = [];
+    }
+    if (!Array.isArray(kids)) kids = [kids];
+    const children = kids.flat().map(mmText).filter(Boolean);
+    if (title || children.length) branches.push({ title, children });
+  }
+  return { root, branches };
+}
+
+export function renderMindmap(rawTree, { fontFamily = FONT } = {}) {
+  const tree = mmNormalize(rawTree);
+  const root = mmBox(tree.root, 34, 14, { padX: 26, padY: 16 });
+  const branches = tree.branches.slice(0, 8).map((b, i) => {
+    const box = mmBox(b.title, 26, 12, { padX: 18, padY: 12 });
+    const children = b.children.slice(0, 6).map((c) => mmBox(c, 20, 18));
     const gapY = 14;
     const childrenH = children.reduce((a, c) => a + c.h + gapY, -gapY);
     return { ...box, color: MM_COLORS[i % MM_COLORS.length], children, childrenH: Math.max(0, childrenH),

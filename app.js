@@ -104,7 +104,7 @@ async function flushTranslation() {
     updateEngineLabel();
   } catch (e) {
     session.buf.xl.unshift(...parts);        // 下次再試
-    setStatus(`翻譯失敗（稍後自動重試）：${e.message.slice(0, 80)}`, true);
+    setStatus(`翻譯失敗（稍後自動重試）：${friendlyError(e)}`, true);
   }
   saveSession();
 }
@@ -139,14 +139,14 @@ async function genNarrative(final = false) {
   } catch (e) {
     if (running) {
       session.buf.narr.unshift(...parts);     // 放回去，下一輪與新內容一起整理
-      setStatus(`順稿暫時失敗，下次自動重試：${e.message.slice(0, 80)}`, true);
+      setStatus(`順稿暫時失敗，下次自動重試：${friendlyError(e)}`, true);
     } else {
       const lang = detectLang(text, lectureLang());
       const heading = lang === "en" ? "Raw transcript (Gemini unavailable, not polished)" : "原始逐字稿（Gemini 無法連線，未整理）";
       const item = { ts: hhmm(), md: `## ${heading}\n${text}`, lang };
       session.narr.push(item);
       renderNarr(item);
-      setStatus(`順稿失敗：${e.message.slice(0, 80)}`, true);
+      setStatus(`順稿失敗：${friendlyError(e)}`, true);
     }
   } finally {
     narrBusy = false;
@@ -260,10 +260,10 @@ async function genQuestions({ replace = null, card = null } = {}) {
     setStatus(running ? "  錄音中…" : "已停止 ✓ 課後提問已產生");
   } catch (e) {
     placeholder.innerHTML = `<div class="qhead"><span>💬 課後提問</span></div>
-      <p class="hint">產生失敗：${esc(e.message.slice(0, 100))}</p>
+      <p class="hint">產生失敗：${esc(friendlyError(e))}</p>
       <div class="qactions"><button type="button" class="qbtn">🔄 再試一次</button></div>`;
     placeholder.querySelector("button").addEventListener("click", () => genQuestions({ replace, card: placeholder }));
-    setStatus(`課後提問失敗：${e.message.slice(0, 80)}`, true);
+    setStatus(`課後提問失敗：${friendlyError(e)}`, true);
   } finally {
     questionsBusy = false;
     saveSession();
@@ -300,7 +300,7 @@ async function genDiagram() {
     renderCard(item);
     idleStatus();
   } catch (e) {
-    setStatus(`圖解失敗（下次再試）：${e.message.slice(0, 80)}`, true);
+    setStatus(`圖解失敗（下次再試）：${friendlyError(e)}`, true);
   } finally {
     diagBusy = false;
     saveSession();
@@ -382,6 +382,15 @@ async function stop() {
   await genQuestions();          // 停止後依整堂內容產生課後提問
 }
 
+// 把 API 錯誤翻成看得懂的說明
+function friendlyError(e) {
+  const msg = String(e?.message || e);
+  if (/429|RESOURCE_EXHAUSTED|quota/i.test(msg)) return "Gemini 免費額度已用完（每日配額），請稍後或明天再試";
+  if (/503|UNAVAILABLE/i.test(msg)) return "Gemini 伺服器忙碌中，請稍後再試";
+  if (/API key|401|403/i.test(msg)) return "Gemini API Key 無效或沒有權限，請到設定確認";
+  return msg.slice(0, 120);
+}
+
 /* ───────────── 匯出（中文版 / English 版） ───────────── */
 const EXPORT_TEXT = {
   zh: { htmlLang: "zh-Hant-TW", title: "即時課堂轉錄 順稿", exported: "匯出時間：", transcript: "原始逐字稿",
@@ -436,15 +445,20 @@ async function buildExport(lang, progress) {
   // 順稿依上課語言產生（舊資料沒有 lang 視為中文）；語言不同時才翻譯
   const narrMd = (n) => ((n.lang || "zh") === lang ? n.md : n[mdKey]);
   const jobs = [];
+  const failures = [];
+  const soft = (fn) => async () => {        // 失敗不中斷匯出：改用原文並記錄原因
+    try { await fn(); } catch (e) { console.warn("[Export]", e); failures.push(friendlyError(e)); }
+  };
   narrSrc.forEach((n) => {
-    if (!narrMd(n)) jobs.push(async () => { n[mdKey] = await gemini.translateMarkdown(n.md, lang); });
+    if (narrMd(n)) return;
+    if (gemini) jobs.push(soft(async () => { n[mdKey] = await gemini.translateMarkdown(n.md, lang); }));
+    else failures.push("尚未設定 Gemini API Key");
   });
-  if (lang === "en") {
-    session.diagrams.forEach((d) => { if (!d.spec_en) jobs.push(async () => { d.spec_en = await gemini.translateJson(d.spec, "en"); }); });
+  if (lang === "en" && gemini) {
+    session.diagrams.forEach((d) => { if (!d.spec_en) jobs.push(soft(async () => { d.spec_en = await gemini.translateJson(d.spec, "en"); })); });
   }
-  if (jobs.length && !gemini) throw new Error("需要翻譯，請先在設定中輸入 Gemini API Key");
   session.questions.forEach((q) => {
-    if ((q.lang || "zh") !== lang && !q[`data_${lang}`]) jobs.push(() => questionsFor(q, lang));
+    if ((q.lang || "zh") !== lang && !q[`data_${lang}`]) jobs.push(soft(() => questionsFor(q, lang)));
   });
   // 整堂課的心智圖（內容有變才重新產生）
   session.mindmaps ??= {};
@@ -455,6 +469,7 @@ async function buildExport(lang, progress) {
         session.mindmaps[lang] = { stamp, tree: await gemini.mindmap(questionSource(lang), lang) };
       } catch (e) {
         console.warn("[Mindmap]", e.message);       // 失敗就略過心智圖，不影響其他內容
+        failures.push(friendlyError(e));
       }
     });
   }
@@ -468,14 +483,18 @@ async function buildExport(lang, progress) {
     html: `<section class="questions">${questionsHtml({ ts: q.ts, lang, data: await questionsFor(q, lang) })}</section>`,
   })));
   const blocks = [
-    ...narrSrc.map((n) => ({ ts: n.ts, html: `<div class="ts">⏱ ${esc(n.ts)}</div>${mdToHtml(narrMd(n))}` })),
+    ...narrSrc.map((n) => ({ ts: n.ts, html: `<div class="ts">⏱ ${esc(n.ts)}</div>${mdToHtml(narrMd(n) || n.md)}` })),
     ...qBlocks,
     ...session.diagrams.map((d) => {
-      const spec = lang === "en" ? d.spec_en : d.spec;
+      const spec = (lang === "en" ? d.spec_en : d.spec) || d.spec;
       return { ts: d.ts, html: `<figure>${renderDiagram(spec, d.ts)}<figcaption>${esc(d.ts)} ｜ ${esc(spec.title_zh || "")}${T.sep}${esc(spec.concept_zh || "")}</figcaption></figure>` };
     }),
   ].sort((a, b) => a.ts.localeCompare(b.ts));
 
+  const warning = failures.length
+    ? (lang === "en" ? `Some sections could not be translated (${failures[0]}), so the original text is kept.`
+                     : `部分內容未翻譯（${failures[0]}），該段落保留原文。`)
+    : "";
   const tree = session.mindmaps?.[lang]?.tree;
   const mindmapHtml = tree
     ? `<figure class="mindmap"><h2>${T.mindmap}</h2>${renderMindmap(tree)}</figure>`
@@ -496,6 +515,7 @@ async function buildExport(lang, progress) {
  .term{color:#0b5394} .ts{color:#7f8c8d;font-size:.85em;margin-top:20px}
  figure{margin:24px 0} figure svg{width:100%;height:auto;border:1px solid #dde1e7;border-radius:6px}
  .mindmap{margin:24px 0 36px} .mindmap h2{margin-bottom:10px}
+ .warn{background:#fdf6e3;border-left:4px solid #f39c12;color:#7d6608;padding:8px 14px;margin:16px 0}
  figcaption{color:#7f8c8d;font-size:.9em;margin-top:6px;text-align:center}
  details{margin-top:40px} summary{cursor:pointer;color:#2980b9;font-weight:700}
  .questions{margin:28px 0;border:1px solid #d6c7ec;border-radius:8px;background:#faf7ff;padding:4px 18px 12px}
@@ -505,6 +525,7 @@ async function buildExport(lang, progress) {
 </style></head><body>
 <h1>${T.title} ${esc(label)}</h1>
 <div class="ts">${T.exported}${esc(new Date().toLocaleString(T.locale))}</div>
+${warning ? `<div class="warn">⚠ ${esc(warning)}</div>` : ""}
 ${mindmapHtml}
 ${blocks.map((b) => b.html).join("\n")}
 ${transcript ? `<details><summary>${T.transcript}</summary>${transcript}</details>` : ""}
@@ -532,7 +553,7 @@ async function doExport(lang) {
     download(doc, `${EXPORT_TEXT[lang].file}_${stamp}.html`);
     status.textContent = lang === "en" ? "✓ English 版已下載" : "✓ 中文版已下載";
   } catch (e) {
-    status.textContent = `匯出失敗：${e.message.slice(0, 100)}`;
+    status.textContent = `匯出失敗：${friendlyError(e)}`;
   } finally {
     buttons.forEach((b) => (b.disabled = false));
   }
