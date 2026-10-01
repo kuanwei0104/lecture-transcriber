@@ -236,7 +236,7 @@ function questionSource(lang) {
 }
 
 async function genQuestions({ replace = null, card = null } = {}) {
-  if (!gemini || questionsBusy) return;
+  if (!gemini || questionsBusy || cfg.qCount <= 0) return;   // 題數設為 0 就不產生
   const lang = lectureLang();
   const source = questionSource(lang);
   if (source.length < 40) return;
@@ -581,7 +581,7 @@ function applySettings() {
     lang: $("#setLang").value,
     narrInt: Math.max(60, parseInt($("#setNarr").value, 10) || DEFAULTS.narrInt),
     diagInt: Math.max(60, parseInt($("#setDiag").value, 10) || DEFAULTS.diagInt),
-    qCount: Math.min(20, Math.max(1, parseInt($("#setQCount").value, 10) || DEFAULTS.qCount)),
+    qCount: Math.min(20, Math.max(0, parseInt($("#setQCount").value, 10) || 0)),
   };
   const restart = running && (next.engine !== cfg.engine || next.lang !== cfg.lang || next.key !== cfg.key);
   if (next.key !== cfg.key) gemini = next.key ? new Gemini(next.key) : null;
@@ -592,9 +592,36 @@ function applySettings() {
   if (restart) stop().then(start);
 }
 
+// 拖曳分隔線調整逐字稿與翻譯的高度
+function bindSplitter() {
+  const bar = $("#splitter"), box = $("#translateBox"), pane = $("#pane-transcript");
+  const saved = store.get("translateH", null);
+  if (saved) box.style.flexBasis = `${saved}px`;
+  let startY = 0, startH = 0;
+  const move = (e) => {
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    const max = pane.clientHeight - 120;
+    const h = Math.max(60, Math.min(max, startH + (startY - y)));
+    box.style.flexBasis = `${h}px`;
+  };
+  const end = () => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", end);
+    store.set("translateH", box.getBoundingClientRect().height);
+  };
+  bar.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    startY = e.clientY;
+    startH = box.getBoundingClientRect().height;
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", end);
+  });
+}
+
 function applyTranslateUi() {
   $("#chkTranslate").checked = cfg.translate;
   $("#translateBox").hidden = !cfg.translate;
+  $("#splitter").hidden = !cfg.translate;
   $("#translateHead").textContent = cfg.lang.startsWith("zh") ? "📄 English Translation" : "📄 中文翻譯";
 }
 
@@ -665,6 +692,7 @@ function bind() {
 }
 
 bind();
+bindSplitter();
 applyTranslateUi();
 showTab("transcript");
 restoreSession();

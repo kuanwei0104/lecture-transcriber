@@ -40,6 +40,7 @@
   <section class="pane" id="pane-transcript">
     <div class="pane-head blue">📝 即時逐字稿</div>
     <div class="scroll" id="transcript"><p class="hint">按「▶ 開始錄音」後，講者說的話會即時出現在這裡。</p></div>
+    <div id="splitter" class="splitter" role="separator" aria-orientation="horizontal" title="拖曳調整上下高度"></div>
     <div id="translateBox" class="translate">
       <div class="pane-head steel" id="translateHead">📄 English Translation</div>
       <div class="scroll mono" id="translation"></div>
@@ -103,8 +104,8 @@
 
     <label class="field">
       <span>課後提問數量</span>
-      <input type="number" id="setQCount" min="1" max="20" step="1" inputmode="numeric">
-      <small>停止錄音後產生的問題題數（1–20 題）</small>
+      <input type="number" id="setQCount" min="0" max="20" step="1" inputmode="numeric">
+      <small>停止錄音後產生的問題題數（0 = 不產生）</small>
     </label>
 
     <div class="dlg-actions">

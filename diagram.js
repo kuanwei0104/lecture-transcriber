@@ -1,7 +1,7 @@
 import { esc } from "./util.js";
 
 // 把 Gemini 回傳的圖解結構畫成 SVG（1600×900，課堂講義風格）
-const W = 1600, H = 900;
+const W = 1600;
 const NAVY = "#1f4e79", CREAM = "#fdfcf7", GOLD = "#f39c12", GREY = "#c9d1db";
 const FONT = `"Microsoft JhengHei","PingFang TC","Noto Sans TC","Heiti TC",sans-serif`;
 const NO_BREAK_BEFORE = "）)，。、：；！？,.:;!?";
@@ -39,12 +39,6 @@ export function renderDiagram(spec, ts = "") {
   const rect = (x, y, w, h, fill, stroke = "none", sw = 1.5, r = 14) =>
     el.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`);
 
-  // 標題列
-  rect(40, 28, W - 80, 118, NAVY);
-  text(76, 48, String(spec.title_zh || "課程圖解").slice(0, 28), 44, "#fff", { bold: true });
-  if (spec.subtitle_en) text(78, 106, String(spec.subtitle_en).slice(0, 80), 22, "#cfe0f2");
-  if (ts) text(W - 76, 106, ts, 20, "#cfe0f2", { anchor: "end" });
-
   let panels = (Array.isArray(spec.panels) ? spec.panels : []).filter((p) => p && typeof p === "object").slice(0, 3);
   const flow = (Array.isArray(spec.flow) ? spec.flow : []).map(String).filter((s) => s.trim()).slice(0, 5);
   const formula = String(spec.formula || "").trim();
@@ -53,28 +47,43 @@ export function renderDiagram(spec, ts = "") {
   const [flowLabel, formulaLabel] = isEn ? ["Process / Relationship", "Formula"] : ["流程 / 關係", "公式"];
   if (!panels.length) panels = [{ heading: "重點摘要", bullets: wrap(spec.concept_zh || "", 40).slice(0, 6) }];
 
-  const top = 178, bottom = H - 40;
+  const top = 178;
   const rightW = flow.length || formula ? 470 : 0;
   const leftX = 40, leftW = W - 80 - (rightW ? rightW + 30 : 0);
+  const gap = 26, n = panels.length, pw = (leftW - gap * (n - 1)) / n;
+
+  // 先算內容需要多高，圖的高度再跟著內容走（避免整片空白）
+  const heads = panels.map((p) => wrap(p.heading || "", (pw - 48) / 34).slice(0, 2));
+  const bulletsAll = panels.map((p) => (Array.isArray(p.bullets) ? p.bullets : []).map(String).slice(0, 5));
+  let px, lh, bgap, wraps, panelsH;
+  for (px of [30, 28, 26, 24, 22, 20]) {
+    lh = px * 1.45; bgap = px * 0.8;
+    wraps = bulletsAll.map((bl) => bl.map((b) => wrap(b, (pw - 70) / px)));
+    panelsH = Math.max(...heads.map((h, i) =>
+      30 + h.length * 46 + 10 + wraps[i].reduce((a, w) => a + w.length * lh + bgap, 0) + 24));
+    if (panelsH <= 1180) break;
+  }
+  const flowBh = 100, arrowGap = 34;
+  let rightH = flow.length ? 50 + flow.length * flowBh + (flow.length - 1) * arrowGap : 0;
+  if (formula) rightH += flow.length ? 150 : 130;
+  const H = Math.round(Math.min(1500, Math.max(360, top + Math.max(panelsH, rightH, 160) + 40)));
+  const bottom = H - 40;
+
+  // 標題列
+  rect(40, 28, W - 80, 118, NAVY);
+  text(76, 48, String(spec.title_zh || "課程圖解").slice(0, 28), 44, "#fff", { bold: true });
+  if (spec.subtitle_en) text(78, 106, String(spec.subtitle_en).slice(0, 80), 22, "#cfe0f2");
+  if (ts) text(W - 76, 106, ts, 20, "#cfe0f2", { anchor: "end" });
 
   // 左側重點面板
-  const gap = 26, n = panels.length, pw = (leftW - gap * (n - 1)) / n;
   panels.forEach((p, i) => {
     const x = leftX + i * (pw + gap);
     rect(x, top, pw, bottom - top, "#fff", GREY);
     rect(x, top, pw, 12, GOLD, "none", 0, 6);
     let y = top + 30;
-    for (const ln of wrap(p.heading || "", (pw - 48) / 34).slice(0, 2)) { text(x + 24, y, ln, 34, NAVY, { bold: true }); y += 46; }
+    for (const ln of heads[i]) { text(x + 24, y, ln, 34, NAVY, { bold: true }); y += 46; }
     y += 10;
-    const bullets = (Array.isArray(p.bullets) ? p.bullets : []).map(String).slice(0, 5);
-    let px, lh, bgap, wrapped;
-    for (px of [30, 28, 26, 24, 22, 20]) {         // 挑選放得下的最大字級
-      lh = px * 1.45; bgap = px * 0.8;
-      wrapped = bullets.map((b) => wrap(b, (pw - 70) / px));
-      const need = wrapped.reduce((a, bl) => a + bl.length * lh + bgap, 0);
-      if (y + need <= bottom - 20) break;
-    }
-    for (const bl of wrapped) {
+    for (const bl of wraps[i]) {
       if (y + lh > bottom - 16) break;
       el.push(`<circle cx="${x + 31}" cy="${y + px * 0.55}" r="5" fill="${GOLD}"/>`);
       for (const ln of bl) {
