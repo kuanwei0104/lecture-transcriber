@@ -67,13 +67,43 @@ export class Gemini {
     return this.ask({ system, parts: [{ text }] });
   }
 
+  // 課程講義 → 重點大綱與術語表（PDF 直接交給 Gemini 讀，純文字則送文字）
+  async handoutDigest({ text = "", pdfBase64 = "", name = "" }) {
+    const instr = `以下是一份課程講義${name ? `（檔名：${name}）` : ""}。
+
+請整理成 JSON：
+{
+  "outline": "講義重點大綱，用條列式（- 開頭），依講義順序，1200字內，保留公式與數字",
+  "terms": ["講義中出現的專有名詞（最多 40 個，中文術語請附英文，如：馬兜鈴酸（Aristolochic acid））"]
+}
+
+規則：只整理講義裡有的內容；術語請用課堂上會念出來的講法；不要加入講義沒有的東西。`;
+    const parts = [{ text: instr }];
+    if (pdfBase64) parts.push({ inlineData: { mimeType: "application/pdf", data: pdfBase64 } });
+    else parts.push({ text: `\n【講義文字】\n${text.slice(0, 120000)}` });
+    const raw = await this.ask({ system: "你是課程助教，只輸出純 JSON。", parts, smart: true, json: true });
+    const data = JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""));
+    return { outline: String(data.outline || "").slice(0, 6000),
+             terms: (data.terms || []).map(String).slice(0, 40) };
+  }
+
+  // 講義重點區塊：只用來校正術語，不可以變成內容來源
+  static handoutBlock(handout, lang = "zh") {
+    const outline = (handout || "").trim();
+    if (!outline) return "";
+    return lang === "en"
+      ? `\n[Course handout outline - use it to fix terminology and spelling only; never add content the speaker did not say]\n${outline.slice(0, 6000)}\n`
+      : `\n【課程講義重點（只用來校正專有名詞與錯字，不可加入課堂沒講的內容）】\n${outline.slice(0, 6000)}\n`;
+  }
+
   // 匯出用：整堂課的心智圖結構
-  async mindmap(content, lang = "zh") {
+  async mindmap(content, lang = "zh", handout = "") {
     const instr = lang === "en"
       ? `Below is the full content of a lecture (polished notes and/or transcript):
 
 ${content}
 
+${Gemini.handoutBlock(handout, "en")}
 Summarise the whole lecture as a mind map. Return JSON, written entirely in English:
 {
   "root": "Central topic (max 5 words)",
@@ -91,6 +121,7 @@ Rules:
 
 ${content}
 
+${Gemini.handoutBlock(handout)}
 請把整堂課整理成一張心智圖。以 JSON 回傳（全部使用繁體中文，術語可保留英文）：
 {
   "root": "中心主題（8字內）",
@@ -137,18 +168,19 @@ if a line already has parallel Chinese and English versions, keep only the Engli
     return JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""));
   }
 
-  async transcribeAudio(base64Wav, lang) {
+  async transcribeAudio(base64Wav, lang, terms = "") {
     const prompt = lang.startsWith("zh")
       ? "請把這段課堂錄音逐字轉寫成繁體中文（英文術語保留英文）。只輸出講者說的話，不要加任何說明、標題或時間戳。若沒有可辨識的語音，輸出空字串。"
       : "Transcribe this lecture audio verbatim in English. Output only the spoken words, no notes or timestamps. If there is no intelligible speech, output an empty string.";
+    const hint = terms ? `\n可能出現的專有名詞：${terms}` : "";
     const text = await this.ask({
-      parts: [{ text: prompt }, { inlineData: { mimeType: "audio/wav", data: base64Wav } }],
+      parts: [{ text: prompt + hint }, { inlineData: { mimeType: "audio/wav", data: base64Wav } }],
       allowEmpty: true,
     });
     return text.replace(/^["「]|["」]$/g, "").trim();
   }
 
-  async polishNarrative(raw, prevTitles, lang = "zh") {
+  async polishNarrative(raw, prevTitles, lang = "zh", handout = "") {
     const prev = prevTitles.length ? prevTitles.slice(-6).map((t) => `- ${t}`).join("\n") : (lang === "en" ? "(none yet)" : "（尚無）");
     const instr = lang === "en" ? `You are an academic editor. Turn the spoken lecture transcript below into polished, well-structured lecture notes in English.
 
@@ -174,6 +206,7 @@ Third, in medicine, it is our brain signals, that is, the EEG.
 [Sections already written (avoid repeating these headings, but you may continue the topic)]
 ${prev}
 
+${Gemini.handoutBlock(handout, "en")}
 [This part of the transcript]
 ${raw}
 
@@ -201,6 +234,7 @@ Output the polished Markdown notes:` : `你是學術編輯。把以下口語化�
 【已產生的章節（避免重複命名，但可延續主題）】
 ${prev}
 
+${Gemini.handoutBlock(handout)}
 【本段逐字稿】
 ${raw}
 
@@ -211,7 +245,7 @@ ${raw}
     return { markdown: md, titles };
   }
 
-  async questions(content, count = 8, lang = "zh") {
+  async questions(content, count = 8, lang = "zh", handout = "") {
     const n = Math.min(20, Math.max(1, Math.round(count) || 8));
     const en = lang === "en";
     const instr = en
@@ -219,6 +253,7 @@ ${raw}
 
 ${content}
 
+${Gemini.handoutBlock(handout, "en")}
 Write follow-up questions that could be asked to the speaker or discussed with classmates. Return JSON:
 {
   "summary": "One-sentence summary of the key point of the lecture, in English (max 25 words)",
@@ -239,6 +274,7 @@ Rules:
 
 ${content}
 
+${Gemini.handoutBlock(handout)}
 請根據內容產生「課後提問」，可用來詢問講者或和同學討論。以 JSON 回傳（全部使用繁體中文，術語可附英文）：
 {
   "summary": "一句話總結本堂重點（40字內）",
@@ -264,11 +300,12 @@ ${content}
     return data;
   }
 
-  async diagramSpec(text) {
+  async diagramSpec(text, handout = "") {
     const instr = `以下是課堂最近幾分鐘的講稿：
 
 ${text}
 
+${Gemini.handoutBlock(handout)}
 請整理成一張「課堂講義風格」的圖解，以 JSON 回傳：
 {
   "title_zh": "圖解標題（12字內，繁體中文，術語可保留英文）",

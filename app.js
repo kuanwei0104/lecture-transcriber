@@ -15,6 +15,8 @@ const DEFAULTS = {
   qCount: 8,
 };
 let cfg = { ...DEFAULTS, ...store.get("cfg", {}) };
+// 課程講義（可選）：{names, outline, terms}
+let handout = store.get("handout", { names: [], outline: "", terms: [] });
 let gemini = cfg.key ? new Gemini(cfg.key) : null;
 
 const emptySession = () => ({
@@ -129,7 +131,7 @@ async function genNarrative(final = false) {
   setStatus("順稿整理中…");
   try {
     const lang = detectLang(text, lectureLang());  // 順稿依這段上課內容的語言產生
-    const res = await gemini.polishNarrative(text, session.titles, lang);
+    const res = await gemini.polishNarrative(text, session.titles, lang, handout.outline);
     const item = { ts: hhmm(), md: res.markdown, lang };
     session.titles.push(...res.titles);
     session.narr.push(item);
@@ -252,7 +254,7 @@ async function genQuestions({ replace = null, card = null } = {}) {
   showTab("narrative");
   placeholder.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
-    const item = { ts: hhmm(), lang, data: await gemini.questions(source, cfg.qCount, lang) };
+    const item = { ts: hhmm(), lang, data: await gemini.questions(source, cfg.qCount, lang, handout.outline) };
     if (replace) session.questions[session.questions.indexOf(replace)] = item;
     else session.questions.push(item);
     const fresh = renderQuestions(item, { live: true });
@@ -294,7 +296,7 @@ async function genDiagram() {
   diagBusy = true;
   setStatus("圖解生成中…");
   try {
-    const spec = await gemini.diagramSpec(text);
+    const spec = await gemini.diagramSpec(text, handout.outline);
     const item = { ts: hhmmss(), spec };
     session.diagrams.push(item);
     renderCard(item);
@@ -336,7 +338,7 @@ async function start() {
     return;
   }
   rec = new Engine({
-    gemini, lang: cfg.lang,
+    gemini, lang: cfg.lang, terms: handout.terms.join("、").slice(0, 400),
     onInterim: showInterim,
     onFinal,
     onStatus: (m) => setStatus(m, !m.includes("錄音中")),
@@ -466,7 +468,7 @@ async function buildExport(lang, progress) {
   if (gemini && session.mindmaps[lang]?.stamp !== stamp) {
     jobs.push(async () => {
       try {
-        session.mindmaps[lang] = { stamp, tree: await gemini.mindmap(questionSource(lang), lang) };
+        session.mindmaps[lang] = { stamp, tree: await gemini.mindmap(questionSource(lang), lang, handout.outline) };
       } catch (e) {
         console.warn("[Mindmap]", e.message);       // 失敗就略過心智圖，不影響其他內容
         failures.push(friendlyError(e));
@@ -559,6 +561,49 @@ async function doExport(lang) {
   }
 }
 
+
+/* ───────────── 課程講義（可選） ───────────── */
+const fileToBase64 = (file) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(",")[1]);
+  r.onerror = rej;
+  r.readAsDataURL(file);
+});
+
+function renderHandout() {
+  const box = $("#handoutInfo");
+  box.textContent = handout.names.length
+    ? `已載入：${handout.names.join("、")}（術語 ${handout.terms.length} 個）`
+    : "尚未載入（沒有講義也能正常使用）";
+  $("#btnClearHandout").hidden = !handout.names.length;
+}
+
+async function loadHandout(files) {
+  if (!files.length) return;
+  if (!gemini) { $("#handoutInfo").textContent = "請先填入 Gemini API Key 再載入講義"; return; }
+  const names = [...handout.names];
+  let outline = handout.outline, terms = [...handout.terms];
+  for (const [i, f] of [...files].entries()) {
+    $("#handoutInfo").textContent = `讀取講義 ${i + 1}/${files.length}：${f.name} …`;
+    try {
+      if (f.size > 15 * 1024 * 1024) throw new Error("檔案超過 15MB");
+      const isPdf = /\.pdf$/i.test(f.name) || f.type === "application/pdf";
+      const digest = isPdf
+        ? await gemini.handoutDigest({ pdfBase64: await fileToBase64(f), name: f.name })
+        : await gemini.handoutDigest({ text: await f.text(), name: f.name });
+      outline = (outline ? outline + "\n" : "") + digest.outline;
+      terms = [...new Set([...terms, ...digest.terms])].slice(0, 40);
+      names.push(f.name);
+    } catch (e) {
+      $("#handoutInfo").textContent = `${f.name} 讀取失敗：${friendlyError(e)}`;
+      return;
+    }
+  }
+  handout = { names, outline: outline.slice(0, 6000), terms };
+  store.set("handout", handout);
+  renderHandout();
+}
+
 /* ───────────── 設定 ───────────── */
 function openSettings() {
   $("#setKey").value = cfg.key;
@@ -567,6 +612,7 @@ function openSettings() {
   $("#setNarr").value = cfg.narrInt;
   $("#setDiag").value = cfg.diagInt;
   $("#setQCount").value = cfg.qCount;
+  renderHandout();
   $("#engineNote").textContent = BrowserRecognizer.supported()
     ? "iPhone / iPad：請用 Safari，並開啟「設定 › 一般 › 鍵盤 › 聽寫」。若常中斷，改用 Gemini 音訊辨識。"
     : "⚠ 這個瀏覽器不支援即時辨識，請使用「Gemini 音訊辨識」。";
@@ -663,6 +709,15 @@ function bind() {
     cfg.translate = e.target.checked;
     store.set("cfg", cfg);
     applyTranslateUi();
+  });
+  $("#setHandout").addEventListener("change", (e) => {
+    loadHandout(e.target.files);
+    e.target.value = "";
+  });
+  $("#btnClearHandout").addEventListener("click", () => {
+    handout = { names: [], outline: "", terms: [] };
+    store.set("handout", handout);
+    renderHandout();
   });
   $("#btnShowKey").addEventListener("click", () => {
     const k = $("#setKey");

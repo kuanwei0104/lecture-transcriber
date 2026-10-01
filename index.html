@@ -83,6 +83,16 @@
       <small id="engineNote"></small>
     </label>
 
+    <div class="field">
+      <span>課程講義（可選）</span>
+      <div class="row">
+        <input type="file" id="setHandout" accept=".pdf,.txt,.md" multiple>
+        <button type="button" id="btnClearHandout" class="ghost small" hidden>清除</button>
+      </div>
+      <small id="handoutInfo">尚未載入（沒有講義也能正常使用）</small>
+      <small>載入後，順稿、圖解、提問與語音辨識都會參考講義用語。PPT / Word 請先另存成 PDF。</small>
+    </div>
+
     <label class="field">
       <span>上課語言</span>
       <select id="setLang">

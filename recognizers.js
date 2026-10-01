@@ -97,8 +97,8 @@ export class GeminiAudioRecognizer {
     return !!(navigator.mediaDevices?.getUserMedia && (window.AudioContext || window.webkitAudioContext));
   }
 
-  constructor({ gemini, lang, onInterim, onFinal, onStatus, onError }) {
-    Object.assign(this, { gemini, lang, onInterim, onFinal, onStatus, onError });
+  constructor({ gemini, lang, terms = "", onInterim, onFinal, onStatus, onError }) {
+    Object.assign(this, { gemini, lang, terms, onInterim, onFinal, onStatus, onError });
     this.queue = Promise.resolve();
     this.inflight = 0;
   }
@@ -164,7 +164,7 @@ export class GeminiAudioRecognizer {
     this.inflight++;
     this.queue = this.queue.then(async () => {      // 依序處理，保持句子順序
       try {
-        const text = await this.gemini.transcribeAudio(toBase64(wav), this.lang);
+        const text = await this.gemini.transcribeAudio(toBase64(wav), this.lang, this.terms);
         if (text) this.onFinal(text);
       } catch (e) {
         this.onStatus(`語音辨識失敗（稍後繼續）：${e.message.slice(0, 80)}`);
