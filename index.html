@@ -20,6 +20,7 @@
     <button id="btnNew" class="ghost" title="清除內容，開始新課程" aria-label="新課程">🗒<span class="lbl"> 新課程</span></button>
     <button id="btnExport" class="ghost" title="匯出 HTML" aria-label="匯出 HTML">📥<span class="lbl"> 匯出 HTML</span></button>
     <button id="btnRec" class="rec">▶ 開始錄音</button>
+    <button id="btnAccount" class="ghost" hidden>👤 登入</button>
     <button id="btnSettings" class="icon" aria-label="設定">⚙</button>
   </div>
 </header>
@@ -27,6 +28,7 @@
 <div class="statusbar">
   <span id="status">初始化中…</span>
   <span id="timers"></span>
+  <span id="syncState" class="sync"></span>
   <span id="engine" class="engine"></span>
 </div>
 
@@ -74,7 +76,7 @@
     <label class="field">
       <span>Google Gemini API Key</span>
       <div class="row">
-        <input type="password" id="setKey" autocomplete="off" spellcheck="false" placeholder="AIza…">
+        <input type="password" id="setKey" autocomplete="off" spellcheck="false" placeholder="AIza…（登入帳號後可不填）">
         <button type="button" id="btnShowKey" class="ghost small">顯示</button>
       </div>
       <small>免費申請：<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>。Key 只存在這台裝置的瀏覽器中。</small>
@@ -132,6 +134,35 @@
     <div class="dlg-actions">
       <button type="button" id="btnCancel" class="ghost">取消</button>
       <button type="submit" id="btnSave" class="primary">儲存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="accountDlg">
+  <form method="dialog" onsubmit="return false">
+    <h2>帳號與雲端同步</h2>
+    <div id="acctOut">
+      <p class="dlg-note">登入後，課程紀錄與音檔會自動同步到雲端，可在手機與電腦之間切換；而且不需要自己申請 Gemini API Key。</p>
+      <button type="button" id="btnGoogle" class="primary wide">使用 Google 帳號登入</button>
+      <div class="or"><span>或用 Email 驗證碼登入</span></div>
+      <div class="row">
+        <input type="email" id="acctEmail" autocomplete="email" placeholder="you@example.com">
+        <button type="button" id="btnSendCode" class="ghost small">寄送驗證碼</button>
+      </div>
+      <div class="row" id="codeRow" hidden>
+        <input type="text" id="acctCode" inputmode="numeric" autocomplete="one-time-code" placeholder="驗證碼">
+        <button type="button" id="btnVerify" class="primary small">登入</button>
+      </div>
+    </div>
+    <div id="acctIn" hidden>
+      <p class="acct-who">已登入：<strong id="acctWho"></strong><span id="acctUsage" class="dim"></span></p>
+      <h3>我的課程紀錄</h3>
+      <div id="lectureList" class="lecture-list"></div>
+      <button type="button" id="btnSignOut" class="ghost small">登出</button>
+    </div>
+    <p id="acctStatus" class="dlg-status"></p>
+    <div class="dlg-actions">
+      <button type="button" id="btnAcctClose" class="ghost">關閉</button>
     </div>
   </form>
 </dialog>

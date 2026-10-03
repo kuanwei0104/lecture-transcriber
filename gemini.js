@@ -11,8 +11,10 @@ const SMART_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-late
 class FatalError extends Error {}
 
 export class Gemini {
-  constructor(apiKey) {
+  // proxy：登入後由後端代呼叫（不需要使用者的 API Key），簽名 (model, body) => Response
+  constructor(apiKey, { proxy = null } = {}) {
     this.key = apiKey;
+    this.proxy = proxy;
     this.dead = new Set();      // 回傳 404（已下架）的模型
     this.lastModel = "";
   }
@@ -29,14 +31,19 @@ export class Gemini {
         if (this.dead.has(model)) continue;
         tried++;
         try {
-          const r = await fetch(`${BASE}${model}:generateContent`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-goog-api-key": this.key },
-            body: JSON.stringify(body),
-          });
+          const r = this.proxy
+            ? await this.proxy(model, body)
+            : await fetch(`${BASE}${model}:generateContent`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-goog-api-key": this.key },
+                body: JSON.stringify(body),
+              });
           const data = await r.json().catch(() => ({}));
+          if (r.headers.get("x-usage-today")) this.usage = { today: Number(r.headers.get("x-usage-today")), limit: Number(r.headers.get("x-usage-limit")) };
           if (!r.ok) {
             const msg = data?.error?.message || r.statusText;
+            if (data?.error?.status === "DAILY_LIMIT") throw new FatalError(msg);   // 每人每日上限：換模型也沒用
+            if (this.proxy && r.status === 401) throw new FatalError("登入已過期，請重新登入");
             if (r.status === 404) this.dead.add(model);
             if ((r.status === 400 && /api key/i.test(msg)) || r.status === 401 || r.status === 403)
               throw new FatalError(`API Key 無效或沒有權限：${msg}`);

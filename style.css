@@ -39,6 +39,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* 讓 hidden 屬性永遠優先於 display 樣式 */
 html, body { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 15px;
@@ -193,4 +194,24 @@ dialog h2 { margin: 0 0 12px; color: var(--blue); font-size: 20px; }
 .export-btn:hover:not(:disabled) { border-color: var(--blue); }
 .export-btn:disabled { opacity: .55; cursor: progress; }
 .dlg-status { min-height: 1.6em; margin: 12px 0 0; color: var(--green); font-weight: 700; }
+.statusbar .sync { color: var(--blue); }
+.primary.wide { width: 100%; padding: 11px; }
+.or { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; margin: 16px 0 10px; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+#accountDlg .row { margin-bottom: 8px; }
+#accountDlg input { font: inherit; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); flex: 1; min-width: 0; }
+.acct-who { margin: 0 0 8px; }
+.acct-who .dim { color: var(--dim); font-size: 13px; margin-left: 10px; }
+#accountDlg h3 { font-size: 15px; margin: 14px 0 6px; }
+.lecture-list { max-height: 46vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+.lecture-row { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.lecture-row:last-child { border-bottom: 0; }
+.lecture-row.current { background: var(--zh-bg); }
+.lr-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lr-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lr-main small { color: var(--dim); }
+.lr-act { display: flex; gap: 6px; flex: none; }
+.lecture-list .hint { padding: 12px; margin: 0; }
+.ghost.small.danger { color: var(--red); }
+#accountDlg .ghost.small, #accountDlg .ghost { background: var(--bg); color: var(--text); }
 .dlg-actions .ghost { background: var(--bg); color: var(--text); }

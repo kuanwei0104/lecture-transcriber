@@ -3,6 +3,7 @@ import { Gemini } from "./gemini.js";
 import { renderDiagram, renderMindmap } from "./diagram.js";
 import { BrowserRecognizer, GeminiAudioRecognizer } from "./recognizers.js";
 import { audioStore, ClipRecorder, ClipPlayer } from "./audio.js";
+import { cloud } from "./cloud.js";
 
 const TRANSLATE_INTERVAL = 20_000;
 
@@ -19,7 +20,13 @@ const DEFAULTS = {
 let cfg = { ...DEFAULTS, ...store.get("cfg", {}) };
 // 課程講義（可選）：{names, outline, terms}
 let handout = store.get("handout", { names: [], outline: "", terms: [] });
-let gemini = cfg.key ? new Gemini(cfg.key) : null;
+let gemini = null;
+function refreshGemini() {
+  gemini = cfg.key ? new Gemini(cfg.key)
+         : cloud.user ? new Gemini("", { proxy: cloud.aiProxy })
+         : null;
+}
+refreshGemini();
 
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `s${Date.now()}${Math.random().toString(16).slice(2)}`);
 const emptySession = () => ({
@@ -51,13 +58,15 @@ function setStatus(msg, isError = false) {
 const idleStatus = () => setStatus(running ? "  錄音中…" : "已停止");
 function updateEngineLabel() {
   const eng = cfg.engine === "gemini" ? "Gemini 音訊辨識" : "瀏覽器即時辨識";
-  $("#engine").textContent = `語音：${eng}${gemini?.lastModel ? `　｜　Gemini：${gemini.lastModel}` : ""}`;
+  const via = gemini?.proxy ? "雲端 AI" : "Gemini";
+  $("#engine").textContent = `語音：${eng}${gemini?.lastModel ? `　｜　${via}：${gemini.lastModel}` : ""}`;
 }
 
 let saveTimer = null;
 function saveSession() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => store.set("session", session), 800);
+  scheduleCloudSync();
 }
 
 /* ───────────── 畫面：逐字稿 ───────────── */
@@ -373,6 +382,7 @@ async function stopRecorder() {
     seg.duration = (Date.now() - seg.startedAt) / 1000;
     seg.mime = blob.type;
     try { await audioStore.put(seg.key, blob); } catch (e) { setStatus(`音檔儲存失敗：${e.message.slice(0, 60)}`, true); }
+    uploadSegAudio(seg, blob);
   }
   recSeg = null;
   saveSession();
@@ -419,6 +429,11 @@ async function playFrom(seg, t) {
   if (running) { setStatus("錄音中無法播放，請先停止錄音", true); return; }
   const info = session.audio[seg];
   if (!info || !info.duration) { setStatus("這段沒有錄下音檔", true); return; }
+  if (!(await audioStore.get(info.key).catch(() => null)) && info.cloud && cloud.user) {
+    setStatus("從雲端下載音檔中…");
+    try { await audioStore.put(info.key, await cloud.downloadAudio(info.cloud)); idleStatus(); }
+    catch (e) { setStatus(`音檔下載失敗：${e.message.slice(0, 60)}`, true); return; }
+  }
   if (!(await player.load(seg, info.key))) { setStatus("找不到這段音檔（可能已被瀏覽器清除）", true); return; }
   await player.playAt(Math.max(0, t - 0.5));
 }
@@ -441,7 +456,7 @@ function bindPlayer() {
 }
 
 async function start() {
-  if (!cfg.key) { openSettings(); return; }
+  if (!gemini) { cloud.enabled ? openAccount() : openSettings(); return; }
   const Engine = cfg.engine === "gemini" ? GeminiAudioRecognizer : BrowserRecognizer;
   if (!Engine.supported()) {
     alert(cfg.engine === "browser"
@@ -766,8 +781,8 @@ function applySettings() {
     recordAudio: $("#setRecordAudio").checked,
   };
   const restart = running && (next.engine !== cfg.engine || next.lang !== cfg.lang || next.key !== cfg.key);
-  if (next.key !== cfg.key) gemini = next.key ? new Gemini(next.key) : null;
   cfg = next;
+  refreshGemini();
   store.set("cfg", cfg);
   applyTranslateUi();
   updateEngineLabel();
@@ -807,6 +822,164 @@ function applyTranslateUi() {
   $("#translateHead").textContent = cfg.lang.startsWith("zh") ? "📄 English Translation" : "📄 中文翻譯";
 }
 
+/* ───────────── 帳號與雲端同步（Supabase，可選） ───────────── */
+let syncTimer = null;
+
+function scheduleCloudSync() {
+  if (!cloud.user) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, 4000);
+}
+
+async function syncNow() {
+  clearTimeout(syncTimer);
+  if (!cloud.user || !hasContent()) return;
+  try {
+    await cloud.saveLecture(session, lectureTopic(lectureLang()));
+    $("#syncState").textContent = `☁ 已同步 ${hhmm()}`;
+  } catch (e) {
+    $("#syncState").textContent = "☁ 同步失敗，稍後重試";
+    console.warn("[Cloud]", e);
+  }
+}
+
+async function uploadSegAudio(seg, blob) {
+  if (!cloud.user || !blob) return;
+  try {
+    const path = cloud.audioPath(session.id, session.audio.indexOf(seg), blob.type);
+    await cloud.uploadAudio(path, blob);
+    seg.cloud = path;
+    saveSession();
+  } catch (e) {
+    setStatus(`音檔上傳失敗（本機仍保留）：${e.message.slice(0, 60)}`, true);
+  }
+}
+
+// 登入前錄的音檔，登入後補傳
+async function uploadPendingAudio() {
+  for (const seg of session.audio) {
+    if (seg.cloud || !seg.duration) continue;
+    const blob = await audioStore.get(seg.key).catch(() => null);
+    if (blob) await uploadSegAudio(seg, blob);
+  }
+}
+
+function renderAccountButton() {
+  const btn = $("#btnAccount");
+  btn.hidden = !cloud.enabled;
+  btn.innerHTML = cloud.user ? '☁<span class="lbl"> 我的課程</span>' : '👤<span class="lbl"> 登入</span>';
+  btn.title = cloud.user ? (cloud.user.email || "已登入") : "登入以同步課程、免填 API Key";
+}
+
+function openAccount() {
+  $("#acctStatus").textContent = "";
+  renderAccount();
+  $("#accountDlg").showModal();
+}
+
+async function renderAccount() {
+  const signedIn = !!cloud.user;
+  $("#acctOut").hidden = signedIn;
+  $("#acctIn").hidden = !signedIn;
+  if (!signedIn) return;
+  $("#acctWho").textContent = cloud.user.email || "Google 帳號";
+  cloud.usageToday().then((n) => { $("#acctUsage").textContent = `今日 AI 使用 ${n} 次`; }).catch(() => {});
+  const list = $("#lectureList");
+  list.innerHTML = `<p class="hint">載入中…</p>`;
+  try {
+    const rows = await cloud.listLectures();
+    if (!rows.length) { list.innerHTML = `<p class="hint">還沒有雲端紀錄。錄音後會自動同步到這裡。</p>`; return; }
+    list.innerHTML = rows.map((r) => `
+      <div class="lecture-row${r.id === session.id ? " current" : ""}" data-id="${esc(r.id)}">
+        <div class="lr-main"><strong>${esc(r.title || "（未命名課程）")}</strong>
+          <small>${esc(r.started_at ? new Date(r.started_at).toLocaleString("zh-TW", { dateStyle: "medium", timeStyle: "short" }) : "")}${r.id === session.id ? "　・目前開啟" : ""}</small></div>
+        <div class="lr-act">
+          ${r.id === session.id ? "" : `<button type="button" class="ghost small" data-act="open">開啟</button>`}
+          <button type="button" class="ghost small danger" data-act="del">刪除</button>
+        </div>
+      </div>`).join("");
+  } catch (e) {
+    list.innerHTML = `<p class="hint">讀取失敗：${esc(e.message)}</p>`;
+  }
+}
+
+async function openLecture(id) {
+  if (running) { $("#acctStatus").textContent = "錄音中無法切換課程，請先停止錄音"; return; }
+  $("#acctStatus").textContent = "開啟中…";
+  try {
+    await syncNow();
+    const data = await cloud.getLecture(id);
+    store.set("session", data);
+    location.reload();                    // 重新載入畫面，顯示這堂課
+  } catch (e) {
+    $("#acctStatus").textContent = `開啟失敗：${e.message}`;
+  }
+}
+
+async function deleteLecture(id) {
+  if (!confirm("確定刪除這堂課的雲端紀錄與音檔？此動作無法復原。")) return;
+  try {
+    await cloud.deleteLecture(id);
+    if (id === session.id) delete session.cloudSaved;
+    renderAccount();
+  } catch (e) {
+    $("#acctStatus").textContent = `刪除失敗：${e.message}`;
+  }
+}
+
+function bindAccount() {
+  $("#btnAccount").addEventListener("click", openAccount);
+  $("#btnAcctClose").addEventListener("click", () => $("#accountDlg").close());
+  $("#btnGoogle").addEventListener("click", async () => {
+    const { error } = await cloud.signInWithGoogle();
+    if (error) $("#acctStatus").textContent = `Google 登入失敗：${error.message}`;
+  });
+  $("#btnSendCode").addEventListener("click", async () => {
+    const email = $("#acctEmail").value.trim();
+    if (!/^\S+@\S+\.\S+$/.test(email)) { $("#acctStatus").textContent = "請輸入正確的 Email"; return; }
+    $("#acctStatus").textContent = "寄送中…";
+    const { error } = await cloud.sendEmailCode(email);
+    if (error) { $("#acctStatus").textContent = `寄送失敗：${error.message}`; return; }
+    $("#codeRow").hidden = false;
+    $("#acctStatus").textContent = "已寄出。請輸入信中的驗證碼，或直接點信中的登入連結。";
+    $("#acctCode").focus();
+  });
+  $("#btnVerify").addEventListener("click", async () => {
+    const { error } = await cloud.verifyEmailCode($("#acctEmail").value.trim(), $("#acctCode").value.trim());
+    if (error) $("#acctStatus").textContent = `驗證失敗：${error.message}`;
+  });
+  $("#btnSignOut").addEventListener("click", async () => {
+    await syncNow();
+    await cloud.signOut();
+  });
+  $("#lectureList").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const id = btn.closest(".lecture-row").dataset.id;
+    if (btn.dataset.act === "open") openLecture(id);
+    else deleteLecture(id);
+  });
+}
+
+async function initCloud() {
+  renderAccountButton();
+  if (!cloud.enabled) return;
+  try { await cloud.init(); } catch (e) { console.warn("[Cloud] init", e); return; }
+  const onUser = async (user) => {
+    renderAccountButton();
+    refreshGemini();
+    updateEngineLabel();
+    if ($("#accountDlg").open) renderAccount();
+    if (user) {
+      setStatus(`已登入 ${user.email || ""}，課程會自動同步到雲端`);
+      await syncNow();
+      uploadPendingAudio();
+    }
+  };
+  cloud.onChange(onUser);
+  if (cloud.user) onUser(cloud.user);
+}
+
 /* ───────────── 初始化 ───────────── */
 function showTab(tab) {
   document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
@@ -838,6 +1011,7 @@ function bind() {
   $("#btnNew").addEventListener("click", async () => {
     if (!confirm("清除目前的逐字稿、順稿與圖解，開始新課程？（建議先匯出 HTML）")) return;
     if (running) await stop();
+    if (cloud.user) await syncNow();                      // 已登入：舊課程留在雲端，本機音檔可清掉
     await audioStore.removeSession(session.id).catch(() => {});
     session = emptySession();
     store.set("session", session);
@@ -880,6 +1054,7 @@ function bind() {
   });
   window.addEventListener("beforeunload", (e) => {
     store.set("session", session);
+    if (cloud.user && hasContent()) syncNow();
     if (running) { e.preventDefault(); e.returnValue = ""; }
   });
 }
@@ -887,12 +1062,16 @@ function bind() {
 bind();
 bindSplitter();
 bindPlayer();
+bindAccount();
+initCloud();
 applyTranslateUi();
 showTab("transcript");
 restoreSession();
 updateEngineLabel();
-setStatus(cfg.key ? "就緒 ✓  按「開始錄音」開始" : "請先在設定中輸入 Gemini API Key");
-if (!cfg.key) openSettings();
+setStatus(cfg.key ? "就緒 ✓  按「開始錄音」開始"
+  : cloud.enabled ? "請先登入（右上「👤 登入」），或在設定中輸入自己的 Gemini API Key"
+  : "請先在設定中輸入 Gemini API Key");
+if (!cfg.key && !cloud.enabled) openSettings();
 
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
@@ -900,5 +1079,5 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 
 // 測試用：網址加上 ?debug 可從主控台注入文字
 if (new URLSearchParams(location.search).has("debug")) {
-  window.lecture = { onFinal, genNarrative, genDiagram, genQuestions, flushTranslation, startRecorder, stopRecorder, playFrom, player, session: () => session, setRunning: (v) => (running = v) };
+  window.lecture = { onFinal, genNarrative, genDiagram, genQuestions, flushTranslation, startRecorder, stopRecorder, playFrom, player, session: () => session, setRunning: (v) => (running = v), cloud, refreshGemini, renderAccountButton, openAccount, syncNow, gemini: () => gemini };
 }
