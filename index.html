@@ -39,6 +39,12 @@
 <main class="panes">
   <section class="pane" id="pane-transcript">
     <div class="pane-head blue">📝 即時逐字稿</div>
+    <div id="player" class="player" hidden>
+      <button type="button" id="btnPlay" class="pbtn" aria-label="播放／暫停">▶</button>
+      <input id="pSeek" type="range" min="0" max="1" step="0.1" value="0" aria-label="播放位置">
+      <span id="pTime" class="ptime">0:00 / 0:00</span>
+      <select id="pRate" aria-label="播放速度"><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
+    </div>
     <div class="scroll" id="transcript"><p class="hint">按「▶ 開始錄音」後，講者說的話會即時出現在這裡。</p></div>
     <div id="splitter" class="splitter" role="separator" aria-orientation="horizontal" title="拖曳調整上下高度"></div>
     <div id="translateBox" class="translate">
@@ -111,6 +117,11 @@
         <input type="number" id="setDiag" min="60" step="30">
       </label>
     </div>
+
+    <label class="field check">
+      <span><input type="checkbox" id="setRecordAudio"> 同時錄下音檔（點逐字稿可回放）</span>
+      <small>音檔只存在這台裝置。iPhone 若因此造成辨識中斷，可關閉此選項。</small>
+    </label>
 
     <label class="field">
       <span>課後提問數量</span>

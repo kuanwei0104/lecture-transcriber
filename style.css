@@ -88,6 +88,16 @@ a { color: var(--blue); }
 #transcript .line { margin: 0 0 6px; }
 #transcript .ts, #translation .ts { color: var(--dim); font-size: 12px; margin-right: 6px; }
 #transcript .partial { color: var(--partial); }
+#transcript .seekable { cursor: pointer; border-radius: 4px; padding: 1px 4px; margin-left: -4px; }
+#transcript .seekable:hover { background: rgba(41, 128, 185, .10); }
+#transcript .line.now { background: rgba(243, 156, 18, .22); }
+.player { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.player[hidden] { display: none !important; }
+.pbtn { background: var(--blue); color: #fff; width: 32px; height: 32px; border-radius: 50%; font-size: 14px; flex: none; }
+.player input[type=range] { flex: 1; min-width: 60px; accent-color: var(--blue); }
+.ptime { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.player select { font: inherit; font-size: 12px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
+.field.check > span { font-weight: 700; display: flex; align-items: center; gap: 6px; }
 .translate { display: flex; flex-direction: column; flex: 0 0 38%; min-height: 60px; }
 .translate[hidden] { display: none !important; }
 .splitter { flex: 0 0 7px; background: var(--border); cursor: row-resize; position: relative; }

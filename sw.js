@@ -1,7 +1,7 @@
 // 離線快取：網路優先，失敗才用快取（確保更新後能立即拿到新版）
-const CACHE = "lecture-v13";
+const CACHE = "lecture-v14";
 const ASSETS = ["./", "index.html", "style.css", "app.js", "util.js", "gemini.js", "diagram.js",
-                "recognizers.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-180.png"];
+                "recognizers.js", "audio.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-180.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));

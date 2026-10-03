@@ -2,6 +2,7 @@ import { $, esc, hhmmss, hhmm, collapseRepeats, store, mdToHtml } from "./util.j
 import { Gemini } from "./gemini.js";
 import { renderDiagram, renderMindmap } from "./diagram.js";
 import { BrowserRecognizer, GeminiAudioRecognizer } from "./recognizers.js";
+import { audioStore, ClipRecorder, ClipPlayer } from "./audio.js";
 
 const TRANSLATE_INTERVAL = 20_000;
 
@@ -13,14 +14,18 @@ const DEFAULTS = {
   diagInt: 120,
   translate: true,
   qCount: 8,
+  recordAudio: true,
 };
 let cfg = { ...DEFAULTS, ...store.get("cfg", {}) };
 // 課程講義（可選）：{names, outline, terms}
 let handout = store.get("handout", { names: [], outline: "", terms: [] });
 let gemini = cfg.key ? new Gemini(cfg.key) : null;
 
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `s${Date.now()}${Math.random().toString(16).slice(2)}`);
 const emptySession = () => ({
+  id: newId(),
   started: null,
+  audio: [],          // [{key, startedAt, duration, mime}] 每次開始～停止錄音一段
   lines: [],          // [{ts, text}]
   translations: [],   // [{ts, text}]
   narr: [],           // [{ts, md}]
@@ -30,10 +35,13 @@ const emptySession = () => ({
   buf: { narr: [], diag: [], xl: [] },
 });
 let session = { ...emptySession(), ...store.get("session", {}) };
+session.id ??= newId();
+session.audio ??= [];
 
 let rec = null, running = false, tick = null, wakeLock = null;
 let lastNarr = 0, lastDiag = 0, lastXl = 0;
 let narrBusy = false, diagBusy = false, questionsBusy = false;
+let recorder = null, recSeg = null, utterStart = null;   // 音檔錄製與時間對齊
 
 /* ───────────── 狀態列 ───────────── */
 function setStatus(msg, isError = false) {
@@ -55,12 +63,18 @@ function saveSession() {
 /* ───────────── 畫面：逐字稿 ───────────── */
 const nearBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 60;
 
-function appendLine(container, { ts, text }) {
+function appendLine(container, { ts, text, seg = null, t = null }) {
   container.querySelector(".hint")?.remove();
   const follow = nearBottom(container);
   const p = document.createElement("p");
   p.className = "line";
   p.innerHTML = `<span class="ts">[${esc(ts)}]</span>${esc(text)}`;
+  if (seg != null && t != null) {           // 有音檔的句子：點一下從那裡開始播放
+    p.classList.add("seekable");
+    p.dataset.seg = seg;
+    p.dataset.t = t;
+    p.title = "點一下從這句開始播放";
+  }
   const partial = container.querySelector(".partial");
   container.insertBefore(p, partial || null);
   if (follow) container.scrollTop = container.scrollHeight;
@@ -70,6 +84,7 @@ function showInterim(text) {
   const box = $("#transcript");
   let el = box.querySelector(".partial");
   if (!text) { el?.remove(); return; }
+  if (running && utterStart == null) utterStart = Date.now();
   const follow = nearBottom(box);
   if (!el) {
     el = document.createElement("p");
@@ -80,11 +95,17 @@ function showInterim(text) {
   if (follow) box.scrollTop = box.scrollHeight;
 }
 
-function onFinal(raw) {
+function onFinal(raw, startedAt) {
   const text = collapseRepeats(raw);
   const last = session.lines.at(-1)?.text;
+  const began = startedAt ?? utterStart ?? Date.now() - 2500;
+  utterStart = null;
   if (!text || text === last) return;
   const line = { ts: hhmmss(), text };
+  if (recSeg != null) {                     // 對齊音檔：這句話在本段錄音的第幾秒開始
+    line.seg = recSeg;
+    line.t = Math.max(0, Math.round((began - session.audio[recSeg].startedAt - 300) / 100) / 10);
+  }
   session.lines.push(line);
   session.buf.narr.push(text);
   session.buf.diag.push(text);
@@ -328,6 +349,97 @@ function onTick() {
   if (rd <= 0) { lastDiag = now; genDiagram(); }
 }
 
+/* ───────────── 音檔錄製與同步播放 ───────────── */
+async function startRecorder() {
+  recSeg = null;
+  if (!cfg.recordAudio || !ClipRecorder.supported()) return;
+  try {
+    recorder = new ClipRecorder();
+    const startedAt = await recorder.start(rec?.stream);
+    session.audio.push({ key: `${session.id}:${session.audio.length}`, startedAt, duration: 0, mime: "" });
+    recSeg = session.audio.length - 1;
+  } catch (e) {
+    recorder = null;
+    setStatus(`無法同時錄下音檔（逐字稿照常進行）：${e.message.slice(0, 60)}`, true);
+  }
+}
+
+async function stopRecorder() {
+  if (!recorder || recSeg == null) { recorder = null; recSeg = null; return; }
+  const seg = session.audio[recSeg];
+  const blob = await recorder.stop();
+  recorder = null;
+  if (blob && blob.size) {
+    seg.duration = (Date.now() - seg.startedAt) / 1000;
+    seg.mime = blob.type;
+    try { await audioStore.put(seg.key, blob); } catch (e) { setStatus(`音檔儲存失敗：${e.message.slice(0, 60)}`, true); }
+  }
+  recSeg = null;
+  saveSession();
+  showPlayer();
+}
+
+const fmtTime = (s) => {
+  s = Math.max(0, Math.floor(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(sec).padStart(2, "0")}`;
+};
+
+const player = new ClipPlayer({
+  onTime(seg, t) {
+    if (seg == null) return;
+    const dur = session.audio[seg]?.duration || 0;
+    $("#pTime").textContent = `${fmtTime(t)} / ${fmtTime(dur)}`;
+    if (!seeking) { $("#pSeek").max = dur || 1; $("#pSeek").value = t; }
+    // 標示目前播放到的句子
+    let now = null;
+    document.querySelectorAll(`#transcript .seekable[data-seg="${seg}"]`).forEach((el) => {
+      if (Number(el.dataset.t) <= t + 0.2) now = el;
+    });
+    document.querySelectorAll("#transcript .line.now").forEach((el) => el !== now && el.classList.remove("now"));
+    if (now && !now.classList.contains("now")) {
+      now.classList.add("now");
+      if (!player.audio.paused) now.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  },
+  onState(playing) { $("#btnPlay").textContent = playing ? "⏸" : "▶"; },
+});
+let seeking = false;
+
+function showPlayer() {
+  const has = session.audio.some((a) => a.duration > 0);
+  $("#player").hidden = !has;
+  if (has && player.seg == null) {
+    const last = session.audio.length - 1;
+    $("#pTime").textContent = `0:00 / ${fmtTime(session.audio[last].duration)}`;
+  }
+}
+
+async function playFrom(seg, t) {
+  if (running) { setStatus("錄音中無法播放，請先停止錄音", true); return; }
+  const info = session.audio[seg];
+  if (!info || !info.duration) { setStatus("這段沒有錄下音檔", true); return; }
+  if (!(await player.load(seg, info.key))) { setStatus("找不到這段音檔（可能已被瀏覽器清除）", true); return; }
+  await player.playAt(Math.max(0, t - 0.5));
+}
+
+function bindPlayer() {
+  $("#transcript").addEventListener("click", (e) => {
+    const line = e.target.closest(".seekable");
+    if (line) playFrom(Number(line.dataset.seg), Number(line.dataset.t));
+  });
+  $("#btnPlay").addEventListener("click", async () => {
+    if (player.seg == null) {
+      const seg = session.audio.findLastIndex((a) => a.duration > 0);
+      if (seg >= 0) await playFrom(seg, 0);
+    } else player.toggle();
+  });
+  const seek = $("#pSeek");
+  seek.addEventListener("input", () => { seeking = true; $("#pTime").textContent = `${fmtTime(seek.value)} / ${fmtTime(seek.max)}`; });
+  seek.addEventListener("change", () => { seeking = false; if (player.seg != null) player.seek(Number(seek.value)); });
+  $("#pRate").addEventListener("change", (e) => { player.rate = Number(e.target.value); });
+}
+
 async function start() {
   if (!cfg.key) { openSettings(); return; }
   const Engine = cfg.engine === "gemini" ? GeminiAudioRecognizer : BrowserRecognizer;
@@ -353,6 +465,8 @@ async function start() {
   running = true;
   session.started ??= Date.now();
   lastNarr = lastDiag = lastXl = Date.now();
+  player.pause();
+  await startRecorder();
   btn.textContent = "⏹ 停止錄音";
   btn.classList.add("on");
   setStatus("  錄音中…");
@@ -374,6 +488,7 @@ async function stop() {
   setStatus("已停止（處理最後一段語音中…）");
   try { await rec?.stop(); } catch { /* ignore */ }
   rec = null;
+  await stopRecorder();
   btn.disabled = false;
   showInterim("");
   wakeLock?.release?.().catch(() => {});
@@ -543,6 +658,27 @@ function download(doc, name) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+// 匯出檔名：日期_當次課程主題_中文 / 日期_當次課程主題_English
+function lectureTopic(lang) {
+  const root = session.mindmaps?.[lang]?.tree?.root;
+  if (root) return String(root);
+  for (const n of session.narr) {
+    const md = (n.lang || "zh") === lang ? n.md : n[`md_${lang}`];
+    const m = md && md.match(/^##\s+(.+)$/m);
+    if (m && !/原始逐字稿|Raw transcript/.test(m[1])) return m[1];
+  }
+  return lang === "en" ? "Lecture Notes" : "課堂筆記";
+}
+
+function exportFileName(lang) {
+  const d = session.started ? new Date(session.started) : new Date();
+  const date = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const topic = lectureTopic(lang)
+    .replace(/[\\/:*?"<>|\r\n\t]+/g, " ")      // Windows／macOS 不允許的字元
+    .replace(/\s+/g, " ").trim().slice(0, 40) || (lang === "en" ? "Lecture Notes" : "課堂筆記");
+  return `${date}_${topic}_${lang === "en" ? "English" : "中文"}.html`;
+}
+
 async function doExport(lang) {
   const status = $("#exportStatus");
   const buttons = document.querySelectorAll("#exportDlg [data-lang]");
@@ -550,9 +686,7 @@ async function doExport(lang) {
   buttons.forEach((b) => (b.disabled = true));
   try {
     const doc = await buildExport(lang, (m) => (status.textContent = m));
-    const d = new Date();
-    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}_${hhmmss(d).replace(/:/g, "")}`;
-    download(doc, `${EXPORT_TEXT[lang].file}_${stamp}.html`);
+    download(doc, exportFileName(lang));
     status.textContent = lang === "en" ? "✓ English 版已下載" : "✓ 中文版已下載";
   } catch (e) {
     status.textContent = `匯出失敗：${friendlyError(e)}`;
@@ -612,6 +746,7 @@ function openSettings() {
   $("#setNarr").value = cfg.narrInt;
   $("#setDiag").value = cfg.diagInt;
   $("#setQCount").value = cfg.qCount;
+  $("#setRecordAudio").checked = cfg.recordAudio;
   renderHandout();
   $("#engineNote").textContent = BrowserRecognizer.supported()
     ? "iPhone / iPad：請用 Safari，並開啟「設定 › 一般 › 鍵盤 › 聽寫」。若常中斷，改用 Gemini 音訊辨識。"
@@ -628,6 +763,7 @@ function applySettings() {
     narrInt: Math.max(60, parseInt($("#setNarr").value, 10) || DEFAULTS.narrInt),
     diagInt: Math.max(60, parseInt($("#setDiag").value, 10) || DEFAULTS.diagInt),
     qCount: Math.min(20, Math.max(0, parseInt($("#setQCount").value, 10) || 0)),
+    recordAudio: $("#setRecordAudio").checked,
   };
   const restart = running && (next.engine !== cfg.engine || next.lang !== cfg.lang || next.key !== cfg.key);
   if (next.key !== cfg.key) gemini = next.key ? new Gemini(next.key) : null;
@@ -680,6 +816,7 @@ function showTab(tab) {
 function restoreSession() {
   session.questions ??= [];
   session.lines.forEach((l) => appendLine($("#transcript"), l));
+  showPlayer();
   session.translations.forEach((t) => appendLine($("#translation"), t));
   [...session.narr.map((n) => ({ ts: n.ts, draw: () => renderNarr(n) })),
    ...session.questions.map((q) => ({ ts: q.ts + "~", draw: () => renderQuestions(q) }))]   // 同一分鐘時提問排在順稿之後
@@ -701,6 +838,7 @@ function bind() {
   $("#btnNew").addEventListener("click", async () => {
     if (!confirm("清除目前的逐字稿、順稿與圖解，開始新課程？（建議先匯出 HTML）")) return;
     if (running) await stop();
+    await audioStore.removeSession(session.id).catch(() => {});
     session = emptySession();
     store.set("session", session);
     location.reload();
@@ -748,6 +886,7 @@ function bind() {
 
 bind();
 bindSplitter();
+bindPlayer();
 applyTranslateUi();
 showTab("transcript");
 restoreSession();
@@ -761,5 +900,5 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 
 // 測試用：網址加上 ?debug 可從主控台注入文字
 if (new URLSearchParams(location.search).has("debug")) {
-  window.lecture = { onFinal, genNarrative, genDiagram, genQuestions, flushTranslation, session: () => session };
+  window.lecture = { onFinal, genNarrative, genDiagram, genQuestions, flushTranslation, startRecorder, stopRecorder, playFrom, player, session: () => session, setRunning: (v) => (running = v) };
 }

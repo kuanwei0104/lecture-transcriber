@@ -135,6 +135,7 @@ export class GeminiAudioRecognizer {
       const speaking = rms > Math.max(0.006, this.floor * 2.5);
       const sec = d.length / TARGET_RATE;
       if (speaking) { this.speech += sec; this.silence = 0; } else { this.silence += sec; }
+      if (this.chunkStart == null) this.chunkStart = Date.now() - sec * 1000;   // 這段音訊的開始時間（回放對齊用）
       this.chunks.push(d); this.len += d.length;
 
       const dur = this.len / TARGET_RATE;
@@ -148,7 +149,7 @@ export class GeminiAudioRecognizer {
     return true;
   }
 
-  _reset() { this.chunks = []; this.len = 0; this.speech = 0; this.silence = 0; }
+  _reset() { this.chunks = []; this.len = 0; this.speech = 0; this.silence = 0; this.chunkStart = null; }
 
   _showInterim(dur = this.len / TARGET_RATE) {
     const parts = [];
@@ -160,12 +161,13 @@ export class GeminiAudioRecognizer {
   _cut() {
     if (this.speech < 0.5) { this._reset(); return; }
     const wav = encodeWav(this.chunks, this.len);
+    const startedAt = this.chunkStart;
     this._reset();
     this.inflight++;
     this.queue = this.queue.then(async () => {      // 依序處理，保持句子順序
       try {
         const text = await this.gemini.transcribeAudio(toBase64(wav), this.lang, this.terms);
-        if (text) this.onFinal(text);
+        if (text) this.onFinal(text, startedAt);
       } catch (e) {
         this.onStatus(`語音辨識失敗（稍後繼續）：${e.message.slice(0, 80)}`);
       } finally {
