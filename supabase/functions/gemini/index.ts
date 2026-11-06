@@ -33,12 +33,28 @@ Deno.serve(async (req) => {
   const { data: { user }, error: authError } = await admin.auth.getUser(token);
   if (authError || !user) return json(401, { code: 401, message: "請先登入" });
 
-  let payload: { model?: string; body?: unknown };
+  let payload: { model?: string; body?: unknown; check?: boolean };
   try {
     payload = await req.json();
   } catch {
     return json(400, { code: 400, message: "invalid JSON" });
   }
+
+  // 只有名單內的帳號能用伺服器的 Key（ALLOWED_EMAILS，逗號分隔）；沒設定時一律不開放
+  // 其他使用者必須在設定裡填自己的 Gemini API Key，不會消耗管理者的額度
+  const allowed = (Deno.env.get("ALLOWED_EMAILS") ?? "")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const isAllowed = !!user.email && allowed.includes(user.email.toLowerCase());
+  if (payload?.check) {
+    return new Response(JSON.stringify({ allowed: isAllowed }), { headers: { ...cors, "Content-Type": "application/json" } });
+  }
+  if (!isAllowed) {
+    return json(403, {
+      code: 403, status: "NOT_ALLOWED",
+      message: "雲端 AI 只開放給管理者帳號；請在設定填入自己的 Gemini API Key（可免費申請）",
+    });
+  }
+
   const { model, body } = payload ?? {};
   if (!model || !ALLOWED.has(model) || !body) return json(400, { code: 400, message: "model not allowed" });
 

@@ -1,6 +1,7 @@
 # 開啟帳號登入、雲端同步與後端 AI（Supabase 設定）
 
-完成後：使用者用 Google 或 Email 驗證碼登入，課程紀錄與音檔自動同步到雲端、可跨裝置開啟，而且不用自己申請 Gemini API Key。
+完成後：使用者用 Google 或 Email 驗證碼登入，課程紀錄與音檔自動同步到雲端、可跨裝置開啟。
+AI 功能：只有你列在 `ALLOWED_EMAILS` 的帳號會使用你的 Gemini Key；其他使用者都用自己的 Key，不會消耗你的額度。
 全部在瀏覽器裡操作，約 30–40 分鐘。還沒設定前，網站照舊運作（使用者自填 API Key）。
 
 ## 1. 建立 Supabase 專案
@@ -25,7 +26,8 @@
 | 名稱 | 值 |
 | --- | --- |
 | `GEMINI_API_KEY` | 你的 Gemini API Key |
-| `DAILY_LIMIT` | `200`（每位使用者每天最多呼叫 AI 幾次，可依預算調整） |
+| `ALLOWED_EMAILS` | 你自己的登入信箱，例如 `you@gmail.com`（多個用逗號分隔）。**只有這些帳號會用到你的 Key**，其他使用者必須在設定填自己的 Gemini API Key。沒設定時，任何人都不能使用伺服器的 Key。 |
+| `DAILY_LIMIT` | `200`（名單內帳號每天最多呼叫 AI 幾次） |
 
 ## 4. 設定登入方式
 
@@ -79,4 +81,4 @@ export const SUPABASE_ANON_KEY = "eyJhbGciOi...";   // anon public key
 
 - 專案超過 7 天沒有任何使用會被暫停，回到後台按 Restore 即可恢復。
 - 資料庫 500 MB、檔案儲存 1 GB：音檔約每小時 15 MB，大約可存 60 小時課程。
-- Gemini 費用由 `GEMINI_API_KEY` 的帳號支付；免費額度用完時，使用者會看到「額度已用完」的提示。
+- `GEMINI_API_KEY` 只供 `ALLOWED_EMAILS` 名單內的帳號使用；其他人的 AI 用量算在他們自己的 Key 上。

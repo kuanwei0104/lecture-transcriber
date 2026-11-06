@@ -76,7 +76,7 @@
     <label class="field">
       <span>Google Gemini API Key</span>
       <div class="row">
-        <input type="password" id="setKey" autocomplete="off" spellcheck="false" placeholder="AIza…（登入帳號後可不填）">
+        <input type="password" id="setKey" autocomplete="off" spellcheck="false" placeholder="AIza…">
         <button type="button" id="btnShowKey" class="ghost small">顯示</button>
       </div>
       <small>免費申請：<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>。Key 只存在這台裝置的瀏覽器中。</small>
@@ -142,7 +142,7 @@
   <form method="dialog" onsubmit="return false">
     <h2>帳號與雲端同步</h2>
     <div id="acctOut">
-      <p class="dlg-note">登入後，課程紀錄與音檔會自動同步到雲端，可在手機與電腦之間切換；而且不需要自己申請 Gemini API Key。</p>
+      <p class="dlg-note">登入後，課程紀錄與音檔會自動同步到雲端，可在手機與電腦之間切換。AI 功能請使用自己的 Gemini API Key（可免費申請）。</p>
       <button type="button" id="btnGoogle" class="primary wide">使用 Google 帳號登入</button>
       <div class="or"><span>或用 Email 驗證碼登入</span></div>
       <div class="row">
@@ -156,6 +156,7 @@
     </div>
     <div id="acctIn" hidden>
       <p class="acct-who">已登入：<strong id="acctWho"></strong><span id="acctUsage" class="dim"></span></p>
+      <p id="acctAi" class="acct-ai"></p>
       <h3>我的課程紀錄</h3>
       <div id="lectureList" class="lecture-list"></div>
       <button type="button" id="btnSignOut" class="ghost small">登出</button>

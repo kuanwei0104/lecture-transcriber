@@ -43,6 +43,7 @@ export class Gemini {
           if (!r.ok) {
             const msg = data?.error?.message || r.statusText;
             if (data?.error?.status === "DAILY_LIMIT") throw new FatalError(msg);   // 每人每日上限：換模型也沒用
+            if (data?.error?.status === "NOT_ALLOWED") throw new FatalError(msg);   // 非管理者帳號：請用自己的 Key
             if (this.proxy && r.status === 401) throw new FatalError("登入已過期，請重新登入");
             if (r.status === 404) this.dead.add(model);
             if ((r.status === 400 && /api key/i.test(msg)) || r.status === 401 || r.status === 403)

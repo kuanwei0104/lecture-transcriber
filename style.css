@@ -201,6 +201,7 @@ dialog h2 { margin: 0 0 12px; color: var(--blue); font-size: 20px; }
 #accountDlg .row { margin-bottom: 8px; }
 #accountDlg input { font: inherit; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); flex: 1; min-width: 0; }
 .acct-who { margin: 0 0 8px; }
+.acct-ai { margin: 0 0 8px; font-size: 14px; color: var(--dim); }
 .acct-who .dim { color: var(--dim); font-size: 13px; margin-left: 10px; }
 #accountDlg h3 { font-size: 15px; margin: 14px 0 6px; }
 .lecture-list { max-height: 46vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }

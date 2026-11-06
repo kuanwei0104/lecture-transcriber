@@ -23,7 +23,7 @@ let handout = store.get("handout", { names: [], outline: "", terms: [] });
 let gemini = null;
 function refreshGemini() {
   gemini = cfg.key ? new Gemini(cfg.key)
-         : cloud.user ? new Gemini("", { proxy: cloud.aiProxy })
+         : cloud.user && cloud.aiAllowed ? new Gemini("", { proxy: cloud.aiProxy })
          : null;
 }
 refreshGemini();
@@ -456,7 +456,12 @@ function bindPlayer() {
 }
 
 async function start() {
-  if (!gemini) { cloud.enabled ? openAccount() : openSettings(); return; }
+  if (!gemini) {
+    if (cloud.enabled && !cloud.user) { openAccount(); return; }
+    setStatus("請先在設定填入自己的 Gemini API Key（可免費申請）", true);
+    openSettings();
+    return;
+  }
   const Engine = cfg.engine === "gemini" ? GeminiAudioRecognizer : BrowserRecognizer;
   if (!Engine.supported()) {
     alert(cfg.engine === "browser"
@@ -868,7 +873,7 @@ function renderAccountButton() {
   const btn = $("#btnAccount");
   btn.hidden = !cloud.enabled;
   btn.innerHTML = cloud.user ? '☁<span class="lbl"> 我的課程</span>' : '👤<span class="lbl"> 登入</span>';
-  btn.title = cloud.user ? (cloud.user.email || "已登入") : "登入以同步課程、免填 API Key";
+  btn.title = cloud.user ? (cloud.user.email || "已登入") : "登入以同步課程到雲端";
 }
 
 function openAccount() {
@@ -883,7 +888,16 @@ async function renderAccount() {
   $("#acctIn").hidden = !signedIn;
   if (!signedIn) return;
   $("#acctWho").textContent = cloud.user.email || "Google 帳號";
-  cloud.usageToday().then((n) => { $("#acctUsage").textContent = `今日 AI 使用 ${n} 次`; }).catch(() => {});
+  $("#acctAi").innerHTML = cfg.key
+    ? "AI：使用你自己的 Gemini API Key"
+    : cloud.aiAllowed
+      ? "AI：使用管理者提供的雲端額度"
+      : "AI：尚未設定。請到 ⚙ 設定填入自己的 Gemini API Key（<a href='https://aistudio.google.com/apikey' target='_blank' rel='noopener'>免費申請</a>）";
+  if (cloud.aiAllowed && !cfg.key) {
+    cloud.usageToday().then((n) => { $("#acctUsage").textContent = `今日 AI 使用 ${n} 次`; }).catch(() => {});
+  } else {
+    $("#acctUsage").textContent = "";
+  }
   const list = $("#lectureList");
   list.innerHTML = `<p class="hint">載入中…</p>`;
   try {
@@ -967,6 +981,7 @@ async function initCloud() {
   try { await cloud.init(); } catch (e) { console.warn("[Cloud] init", e); return; }
   const onUser = async (user) => {
     renderAccountButton();
+    await cloud.checkAiAccess();
     refreshGemini();
     updateEngineLabel();
     if ($("#accountDlg").open) renderAccount();

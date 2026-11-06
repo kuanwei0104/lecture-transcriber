@@ -100,6 +100,23 @@ export const cloud = {
     return data?.calls ?? 0;
   },
 
+  // 這個帳號能不能用伺服器的 AI（只有管理者名單內的帳號可以，其他人用自己的 Key）
+  aiAllowed: false,
+  async checkAiAccess() {
+    this.aiAllowed = false;
+    if (!this.user) return false;
+    try {
+      const { data } = await this.client.auth.getSession();
+      const r = await fetch(`${SUPABASE_URL}/functions/v1/gemini`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session?.access_token}`, apikey: SUPABASE_ANON_KEY },
+        body: JSON.stringify({ check: true }),
+      });
+      this.aiAllowed = r.ok && (await r.json()).allowed === true;
+    } catch { this.aiAllowed = false; }
+    return this.aiAllowed;
+  },
+
   // 給 Gemini 類別用的傳輸函式：改走後端，不需要使用者的 API Key
   aiProxy: async (model, body) => {
     const { data } = await cloud.client.auth.getSession();
