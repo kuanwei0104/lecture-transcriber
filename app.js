@@ -1,6 +1,7 @@
 import { $, esc, hhmmss, hhmm, collapseRepeats, store, mdToHtml } from "./util.js";
 import { Gemini } from "./gemini.js";
-import { renderDiagram, renderMindmap } from "./diagram.js";
+import { renderDiagram, renderMindmap, diagramType } from "./diagram.js";
+import { handoutImages } from "./handout.js";
 import { BrowserRecognizer, GeminiAudioRecognizer } from "./recognizers.js";
 import { audioStore, ClipRecorder, ClipPlayer } from "./audio.js";
 import { cloud } from "./cloud.js";
@@ -313,7 +314,7 @@ function renderCard({ ts, spec }) {
     <div class="card-head"><span>${esc(spec.title_zh || "課程圖解")}</span><time>${esc(ts)}</time></div>
     ${spec.concept_zh ? `<div class="concept">${esc(spec.concept_zh)}</div>` : ""}
     ${tags ? `<div class="tags">${tags}</div>` : ""}
-    <div class="svgwrap">${renderDiagram(spec, ts)}</div>`;
+    <div class="svgwrap">${renderDiagram(spec, ts, { images: handoutImages.resolve })}</div>`;
   box.appendChild(card);
   card.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -326,7 +327,9 @@ async function genDiagram() {
   diagBusy = true;
   setStatus("圖解生成中…");
   try {
-    const spec = await gemini.diagramSpec(text, handout.outline);
+    const recent = session.diagrams.slice(-2).map((d) => diagramType(d.spec));
+    const raw = await gemini.diagramSpec(text, handout.outline, recent);
+    const spec = handoutImages.attach(raw, raw.type);
     const item = { ts: hhmmss(), spec };
     session.diagrams.push(item);
     renderCard(item);
@@ -531,9 +534,11 @@ function friendlyError(e) {
 /* ───────────── 匯出（中文版 / English 版） ───────────── */
 const EXPORT_TEXT = {
   zh: { htmlLang: "zh-Hant-TW", title: "即時課堂轉錄 順稿", exported: "匯出時間：", transcript: "原始逐字稿",
-        mindmap: "課程心智圖", file: "順稿_中文", locale: "zh-TW", sep: "：" },
+        mindmap: "課程心智圖", file: "順稿_中文", locale: "zh-TW", sep: "：",
+        pdfHint: "在列印視窗選擇「另存為 PDF」即可存成 PDF 檔", pdfButton: "🖨 存成 PDF" },
   en: { htmlLang: "en", title: "Lecture Notes", exported: "Exported: ", transcript: "Original transcript",
-        mindmap: "Mind map", file: "LectureNotes_English", locale: "en-US", sep: ": " },
+        mindmap: "Mind map", file: "LectureNotes_English", locale: "en-US", sep: ": ",
+        pdfHint: "Choose “Save as PDF” in the print dialog", pdfButton: "🖨 Save as PDF" },
 };
 
 function hasContent() {
@@ -575,7 +580,7 @@ function questionsFor(q, lang) {
   return gemini.translateJson(plain, lang).then((d) => (q[key] = d));
 }
 
-async function buildExport(lang, progress) {
+async function buildExport(lang, progress, fileTitle) {
   const T = EXPORT_TEXT[lang];
   const narrSrc = session.narr;
   const mdKey = `md_${lang}`;
@@ -592,7 +597,14 @@ async function buildExport(lang, progress) {
     else failures.push("尚未設定 Gemini API Key");
   });
   if (lang === "en" && gemini) {
-    session.diagrams.forEach((d) => { if (!d.spec_en) jobs.push(soft(async () => { d.spec_en = await gemini.translateJson(d.spec, "en"); })); });
+    session.diagrams.forEach((d) => {
+      if (d.spec_en) return;
+      jobs.push(soft(async () => {
+        // 圖型與講義圖片參照不是文字，不送去翻譯
+        const { type, _img, ...text } = d.spec;
+        d.spec_en = { ...(await gemini.translateJson(text, "en")), type, _img };
+      }));
+    });
   }
   session.questions.forEach((q) => {
     if ((q.lang || "zh") !== lang && !q[`data_${lang}`]) jobs.push(soft(() => questionsFor(q, lang)));
@@ -624,7 +636,7 @@ async function buildExport(lang, progress) {
     ...qBlocks,
     ...session.diagrams.map((d) => {
       const spec = (lang === "en" ? d.spec_en : d.spec) || d.spec;
-      return { ts: d.ts, html: `<figure>${renderDiagram(spec, d.ts)}<figcaption>${esc(d.ts)} ｜ ${esc(spec.title_zh || "")}${T.sep}${esc(spec.concept_zh || "")}</figcaption></figure>` };
+      return { ts: d.ts, html: `<figure>${renderDiagram(spec, d.ts, { images: handoutImages.resolve })}<figcaption>${esc(d.ts)} ｜ ${esc(spec.title_zh || "")}${T.sep}${esc(spec.concept_zh || "")}</figcaption></figure>` };
     }),
   ].sort((a, b) => a.ts.localeCompare(b.ts));
 
@@ -642,7 +654,7 @@ async function buildExport(lang, progress) {
   return `<!doctype html>
 <html lang="${T.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${T.title} ${esc(label)}</title>
+<title>${esc(fileTitle)}</title>
 <style>
  body{font-family:${lang === "en" ? `Georgia,"Segoe UI",` : ""}"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;max-width:860px;margin:40px auto;padding:0 20px;color:#2c3e50;background:#fdfcf7;line-height:1.85}
  h1{color:#1a252f;border-bottom:3px solid #2980b9;padding-bottom:8px}
@@ -659,23 +671,54 @@ async function buildExport(lang, progress) {
  .qhead{display:flex;justify-content:space-between;font-weight:700;color:#5b2c8f;font-size:1.15em;padding:8px 0}
  .qhead time{font-weight:400;color:#7f8c8d;font-size:.8em}
  .questions li{margin:6px 0} .qnote{color:#7f8c8d;font-size:.88em} .qsummary{font-weight:700}
+ .pdfbar{position:sticky;top:0;display:flex;gap:12px;align-items:center;justify-content:space-between;background:#1f4e79;color:#fff;padding:10px 16px;margin:-40px -20px 24px;font-size:.95em}
+ .pdfbar button{font:inherit;font-weight:700;border:0;border-radius:8px;padding:8px 16px;background:#fff;color:#1f4e79;cursor:pointer;white-space:nowrap}
+ *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ @page{size:A4;margin:16mm 15mm 18mm;@bottom-center{content:counter(page) " / " counter(pages);font-size:9pt;color:#8a96a3}}
+ @media print{
+  .pdfbar{display:none}
+  body{max-width:none;margin:0;padding:0;background:#fff;font-size:11pt;line-height:1.75}
+  h1{font-size:20pt;margin-top:0} h2{font-size:14pt;break-after:avoid}
+  figure,.questions li,blockquote,.warn{break-inside:avoid}
+  figure svg{max-height:235mm}
+  .transcript{break-before:page}
+ }
 </style></head><body>
+<div class="pdfbar"><span>${T.pdfHint}</span><button type="button" onclick="print()">${T.pdfButton}</button></div>
 <h1>${T.title} ${esc(label)}</h1>
 <div class="ts">${T.exported}${esc(new Date().toLocaleString(T.locale))}</div>
 ${warning ? `<div class="warn">⚠ ${esc(warning)}</div>` : ""}
 ${mindmapHtml}
 ${blocks.map((b) => b.html).join("\n")}
-${transcript ? `<details><summary>${T.transcript}</summary>${transcript}</details>` : ""}
+${transcript ? `<details class="transcript" open><summary>${T.transcript}</summary>${transcript}</details>` : ""}
 </body></html>`;
 }
 
-function download(doc, name) {
-  const url = URL.createObjectURL(new Blob([doc], { type: "text/html;charset=utf-8" }));
-  const a = Object.assign(document.createElement("a"), { href: url, download: name });
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+// 在新分頁開啟列印版，叫出列印視窗讓使用者「另存為 PDF」；分頁標題就是 PDF 的預設檔名
+function showPdf(win, doc) {
+  win.document.open();
+  win.document.write(doc);
+  win.document.close();
+  win.focus();
+  setTimeout(() => { try { win.print(); } catch { /* 頁面上方也有按鈕可以按 */ } }, 600);
+}
+
+// 瀏覽器擋下新分頁時：在本頁的隱藏框架裡列印（暫時把頁面標題換成檔名，PDF 預設檔名才會對）
+function printInFrame(doc, title) {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+  frame.onload = () => {
+    const old = document.title;
+    let done = false;
+    const cleanup = () => { if (done) return; done = true; document.title = old; frame.remove(); };
+    document.title = title;
+    frame.contentWindow.addEventListener("afterprint", () => setTimeout(cleanup, 500));
+    setTimeout(cleanup, 120_000);
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+  };
+  frame.srcdoc = doc;
+  document.body.appendChild(frame);
 }
 
 // 匯出檔名：日期_當次課程主題_中文 / 日期_當次課程主題_English
@@ -696,19 +739,26 @@ function exportFileName(lang) {
   const topic = lectureTopic(lang)
     .replace(/[\\/:*?"<>|\r\n\t]+/g, " ")      // Windows／macOS 不允許的字元
     .replace(/\s+/g, " ").trim().slice(0, 40) || (lang === "en" ? "Lecture Notes" : "課堂筆記");
-  return `${date}_${topic}_${lang === "en" ? "English" : "中文"}.html`;
+  return `${date}_${topic}_${lang === "en" ? "English" : "中文"}`;
 }
 
 async function doExport(lang) {
   const status = $("#exportStatus");
   const buttons = document.querySelectorAll("#exportDlg [data-lang]");
   if (lang === "en" && !gemini) { status.textContent = "English 版需要翻譯，請先在設定中輸入 Gemini API Key。"; return; }
+  // 分頁要在按下按鈕的當下開啟，整理完才開會被瀏覽器擋下；被擋就改在本頁列印
+  const win = window.open("", "_blank");
+  win?.document.write(`<meta charset="utf-8"><title>…</title><p style="font:16px sans-serif;padding:24px;color:#555">整理中，請稍候…</p>`);
   buttons.forEach((b) => (b.disabled = true));
   try {
-    const doc = await buildExport(lang, (m) => (status.textContent = m));
-    download(doc, exportFileName(lang));
-    status.textContent = lang === "en" ? "✓ English 版已下載" : "✓ 中文版已下載";
+    const title = exportFileName(lang);
+    const doc = await buildExport(lang, (m) => (status.textContent = m), title);
+    if (win && !win.closed) showPdf(win, doc);
+    else printInFrame(doc, title);
+    status.textContent = `✓ 已開啟列印視窗：選「另存為 PDF」即可存成「${title}.pdf」`
+      + "（iPhone／iPad：分享 › 列印 › 再按分享 › 儲存到檔案）";
   } catch (e) {
+    win?.close();
     status.textContent = `匯出失敗：${friendlyError(e)}`;
   } finally {
     buttons.forEach((b) => (b.disabled = false));
@@ -745,6 +795,11 @@ async function loadHandout(files) {
       const digest = isPdf
         ? await gemini.handoutDigest({ pdfBase64: await fileToBase64(f), name: f.name })
         : await gemini.handoutDigest({ text: await f.text(), name: f.name });
+      if (isPdf) {
+        // 講義圖片：之後畫單一主題卡、比較表時可以附上（失敗不影響講義重點）
+        try { await handoutImages.addPdf(f, (m) => ($("#handoutInfo").textContent = `${f.name}：${m}`)); }
+        catch (e) { console.warn("[Handout images]", e); }
+      }
       outline = (outline ? outline + "\n" : "") + digest.outline;
       terms = [...new Set([...terms, ...digest.terms])].slice(0, 40);
       names.push(f.name);
@@ -1024,7 +1079,7 @@ function bind() {
     b.addEventListener("click", () => doExport(b.dataset.lang)));
   $("#btnExportClose").addEventListener("click", () => $("#exportDlg").close());
   $("#btnNew").addEventListener("click", async () => {
-    if (!confirm("清除目前的逐字稿、順稿與圖解，開始新課程？（建議先匯出 HTML）")) return;
+    if (!confirm("清除目前的逐字稿、順稿與圖解，開始新課程？（建議先匯出 PDF）")) return;
     if (running) await stop();
     if (cloud.user) await syncNow();                      // 已登入：舊課程留在雲端，本機音檔可清掉
     await audioStore.removeSession(session.id).catch(() => {});
@@ -1044,6 +1099,7 @@ function bind() {
   $("#btnClearHandout").addEventListener("click", () => {
     handout = { names: [], outline: "", terms: [] };
     store.set("handout", handout);
+    handoutImages.clear();
     renderHandout();
   });
   $("#btnShowKey").addEventListener("click", () => {
@@ -1081,7 +1137,7 @@ bindAccount();
 initCloud();
 applyTranslateUi();
 showTab("transcript");
-restoreSession();
+handoutImages.load().finally(restoreSession);      // 講義圖片先載入，圖解卡片才能附圖
 updateEngineLabel();
 setStatus(cfg.key ? "就緒 ✓  按「開始錄音」開始"
   : cloud.enabled ? "請先登入（右上「👤 登入」），或在設定中輸入自己的 Gemini API Key"

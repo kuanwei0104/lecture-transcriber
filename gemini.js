@@ -1,4 +1,5 @@
 import { sleep } from "./util.js";
+import { diagramType } from "./diagram.js";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
 
@@ -308,31 +309,54 @@ ${Gemini.handoutBlock(handout)}
     return data;
   }
 
-  async diagramSpec(text, handout = "") {
+  async diagramSpec(text, handout = "", recentTypes = []) {
+    const recent = recentTypes.slice(-2).join("、") || "（無）";
     const instr = `以下是課堂最近幾分鐘的講稿：
 
 ${text}
 
 ${Gemini.handoutBlock(handout)}
-請整理成一張「課堂講義風格」的圖解，以 JSON 回傳：
+請依「這段內容的性質」選一種最合適的圖型，整理成一張課堂講義風格的圖解。圖型：
+- "points"：重點整理。一般講解、概念說明、多個面向的重點（最常用，沒有特別適合的就用這個）
+- "process"：流程／機制。有先後順序的步驟、作用機制、因果連鎖、實驗或操作程序
+- "card"：單一主題卡。整段集中介紹「一個」具體對象（一味藥、一個疾病、一個方法、一個人物）的多項屬性
+- "compare"：比較表。講者「明確地」把 2–4 個對象拿來逐項比較（例如 A 與 B 的差異）
+只有內容真的在做比較時才用 compare，不要硬做成表格。前兩張圖用的是：${recent}；內容同樣適合時，優先選不同的圖型，讓講義有變化。
+
+以 JSON 回傳（全部用繁體中文，術語可附英文）：
 {
-  "title_zh": "圖解標題（12字內，繁體中文，術語可保留英文）",
+  "type": "points | process | card | compare 擇一",
+  "title_zh": "圖解標題（14字內）",
   "subtitle_en": "English subtitle (max 8 words)",
-  "concept_zh": "核心概念摘要，2-3句繁體中文，術語保留英文",
-  "panels": [
-    {"heading": "小標題（10字內）", "bullets": ["重點（25字內，術語附英文，如：虛無假設（H0））", "..."]}
-  ],
-  "flow": ["步驟一（12字內）", "步驟二", "步驟三"],
-  "formula": "若講稿有公式則以 Unicode 純文字寫出，如 z = (x̄ − μ) / (σ/√n)；沒有則為空字串",
-  "key_terms": ["術語1（English）", "術語2（English）", "術語3（English）"]
+  "concept_zh": "核心概念摘要，2-3句",
+  "key_terms": ["術語1（English）", "術語2（English）", "術語3（English）"],
+  "note": "一句最重要的提醒或結論（30字內，可為空字串）",
+
+  "panels": [{"heading": "小標題（10字內）", "bullets": ["重點（25字內）"]}],
+  "flow": ["步驟（12字內）"],
+  "formula": "講稿中的公式，以 Unicode 純文字寫出，如 z = (x̄ − μ) / (σ/√n)；沒有則為空字串",
+
+  "steps": [{"title": "步驟名稱（12字內）", "detail": "說明（40字內）"}],
+
+  "subject": {"name": "主題名稱（如：辛夷）", "alt": "英文或拉丁名，可空", "tagline": "一句定位（20字內）"},
+  "fields": [{"label": "屬性（6字內，如：性味歸經）", "value": "內容（40字內）"}],
+
+  "items": [{"name": "比較對象名稱", "alt": "英文或拉丁名，可空"}],
+  "rows": [{"label": "比較項目（6字內）", "values": ["對象1的內容（30字內）", "對象2的內容"]}]
 }
 
-規則：panels 2-3 個、每個 2-4 條 bullets；flow 為講稿中的流程或因果順序（2-5 步，沒有則為空陣列）；
-只根據講稿內容，不要捏造；若講稿是廣告或閒聊，也照實摘要。`;
+各圖型要填的欄位（其他欄位給空陣列或空物件即可）：
+- points：panels 2-3 個、每個 2-4 條 bullets；flow 0-5 步；formula 可空
+- process：steps 3-7 步，依講稿的順序；formula 可空
+- card：subject 與 fields 4-9 項，依講稿實際提到的屬性
+- compare：items 2-4 個；rows 3-9 列，每列 values 數量與 items 相同；講稿沒提到的格子填「—」
+
+只根據講稿（與講義）內容，不要捏造；若講稿是廣告或閒聊，用 points 照實摘要。`;
     let raw = await this.ask({ system: "你是教學設計師，只輸出純 JSON。", parts: [{ text: instr }], smart: true, json: true });
     raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
     const spec = JSON.parse(raw);
     if (!spec || typeof spec !== "object") throw new Error("圖解 JSON 格式錯誤");
+    spec.type = diagramType(spec);
     return spec;
   }
 }

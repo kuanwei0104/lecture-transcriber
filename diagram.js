@@ -32,7 +32,231 @@ export function wrap(text, maxEm) {
   return lines.length ? lines : [""];
 }
 
-export function renderDiagram(spec, ts = "") {
+/* ───────────── 圖型：重點整理／流程／單一主題卡／比較表 ───────────── */
+const INK = "#22313f", DIM = "#6b7785", LINE = "#d5dbe3", PAPER = "#ffffff";
+const WARM = "#c0512f", WARM_BG = "#fbeee8";
+// 比較表每一欄的顏色：[主色, 淺底, 邊框]
+const ITEM_COLORS = [["#c0512f", "#fbeee8", "#f3d2c4"], ["#1f7a8c", "#e6f3f5", "#c3e3e8"],
+                     ["#6a4c93", "#f1ecf7", "#dacfe9"], ["#2e7d32", "#e9f4ea", "#c8e3ca"]];
+const arr = (x) => (Array.isArray(x) ? x : []);
+const isObj = (x) => x && typeof x === "object" && !Array.isArray(x);
+
+// Gemini 選的圖型；資料不足以畫該圖型時退回「重點整理」
+export function diagramType(spec) {
+  const t = String(spec?.type || "").trim().toLowerCase();
+  const items = arr(spec.items).filter((i) => isObj(i) && i.name);
+  const rows = arr(spec.rows).filter((r) => isObj(r) && arr(r.values).length);
+  const fields = arr(spec.fields).filter((f) => isObj(f) && f.value);
+  const steps = arr(spec.steps).filter((s) => isObj(s) && s.title);
+  if (t === "compare" && items.length >= 2 && rows.length >= 2) return t;
+  if (t === "card" && isObj(spec.subject) && spec.subject.name && fields.length >= 2) return t;
+  if (t === "process" && steps.length >= 2) return t;
+  return "points";
+}
+
+// 繪圖指令（文字的 y 是基線），排完版知道總高度後再輸出 SVG
+class Sketch {
+  constructor() { this.el = []; }
+  rect(x, y, w, h, fill, stroke = "none", lw = 0, r = 0) {
+    this.el.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${lw}"/>`);
+  }
+  text(x, y, s, px, color, bold = false, anchor = "start") {
+    this.el.push(`<text x="${x}" y="${y}" font-size="${px}" fill="${color}" text-anchor="${anchor}"${bold ? ' font-weight="700"' : ""}>${esc(s)}</text>`);
+  }
+  line(x1, y1, x2, y2, color, lw = 1) {
+    this.el.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${lw}"/>`);
+  }
+  circle(cx, cy, r, fill) { this.el.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/>`); }
+  image(src, x, y, w, h) { this.el.push(`<image href="${src}" x="${x}" y="${y}" width="${w}" height="${h}"/>`); }
+  svg(H, label) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${Math.round(H)}" font-family='${FONT}' role="img" aria-label="${esc(label)}">
+<rect width="${W}" height="${Math.round(H)}" fill="${CREAM}"/>
+${this.el.join("\n")}
+</svg>`;
+  }
+}
+
+const isEnSpec = (spec) => !/[㐀-鿿]/.test(JSON.stringify(spec, (k, v) => (k.startsWith("_") ? undefined : v)));
+const paraH = (s, px, maxW, lh = 1.45) => wrap(s, maxW / px).length * px * lh;
+function para(sk, x, y, s, px, maxW, color = INK, bold = false, lh = 1.45, anchor = "start") {
+  const lines = wrap(s, maxW / px);
+  lines.forEach((ln, i) => sk.text(x, y + i * px * lh, ln, px, color, bold, anchor));
+  return lines.length * px * lh;
+}
+function paraMid(sk, x, top, h, s, px, maxW, color = INK, bold = false, lh = 1.45, anchor = "start") {
+  const n = wrap(s, maxW / px).length;
+  para(sk, x, top + (h - ((n - 1) * px * lh + px)) / 2 + px * 0.86, s, px, maxW, color, bold, lh, anchor);
+}
+function header(sk, title, subtitle, note = "") {
+  sk.rect(40, 28, 1520, 108, NAVY, "none", 0, 16);
+  title = String(title || "課程圖解");
+  const px = strW(title) * 42 <= 1440 ? 42 : Math.max(28, Math.floor(1440 / Math.max(strW(title), 1)));
+  sk.text(76, 86, title, px, "#fff", true);
+  if (subtitle) sk.text(78, 120, wrap(subtitle, 1100 / 20)[0], 20, "#cfe0f2");
+  if (note) sk.text(1524, 120, note, 18, "#cfe0f2", false, "end");
+}
+function noteBox(sk, y, note, color = "#7a5200", bg = "#fff7e6", edge = "#e0a32e") {
+  note = String(note || "").trim();
+  if (!note) return y;
+  const h = paraH(note, 22, 1460) + 30;
+  sk.rect(40, y, 1520, h, bg, edge, 1.5, 12);
+  paraMid(sk, 68, y, h, note, 22, 1460, color, true);
+  return y + h + 28;
+}
+const fit = (img, bw, bh) => { const s = Math.min(bw / img.w, bh / img.h); return [img.w * s, img.h * s]; };
+
+function layoutCompare(spec, ts, imgs) {
+  const items = arr(spec.items).filter((i) => isObj(i) && i.name).slice(0, 4);
+  const n = items.length;
+  const rows = arr(spec.rows).filter(isObj).slice(0, 9).map((r) => {
+    const vals = arr(r.values).map(String).slice(0, n);
+    while (vals.length < n) vals.push("—");
+    return [String(r.label ?? ""), vals];
+  });
+  const isEn = isEnSpec(spec);
+  const pics = items.map((_, i) => imgs[i] || null);
+  const pages = [...new Set(pics.filter(Boolean).map((p) => p.page))].sort((a, b) => a - b);
+  let note = ts;
+  if (pages.length) note = (isEn ? `Images: handout p.${pages.join(", ")}` : `附圖：講義 p.${pages.join("、")}`) + (ts ? `  ·  ${ts}` : "");
+  const sk = new Sketch();
+  header(sk, spec.title_zh, spec.subtitle_en, note);
+  const x0 = 40, lw = n >= 3 ? 220 : 250, cw = (1520 - lw) / n;
+  const px = n === 2 ? 22 : n === 3 ? 21 : 19;
+  let y = 168;
+  if (pics.some(Boolean)) {
+    // 每一欄一張附圖卡片；沒對應到圖片的欄位用名稱大字代替
+    const cardH = 236, imgH = 150;
+    items.forEach((it, i) => {
+      const [color, bg, soft] = ITEM_COLORS[i % 4];
+      const cx = x0 + lw + i * cw;
+      sk.rect(cx + 8, y, cw - 16, cardH, PAPER, soft, 2, 14);
+      if (pics[i]) {
+        const [iw, ih] = fit(pics[i], cw - 40, imgH);
+        sk.image(pics[i].src, cx + (cw - iw) / 2, y + 12 + (imgH - ih) / 2, iw, ih);
+      } else {
+        sk.rect(cx + 20, y + 12, cw - 40, imgH, bg, "none", 0, 10);
+        sk.text(cx + cw / 2, y + 12 + imgH / 2 + 22, String(it.name).slice(0, 6), 60, soft, true, "middle");
+      }
+      sk.text(cx + cw / 2, y + 196, wrap(it.name, (cw - 30) / 30)[0], 30, color, true, "middle");
+      if (it.alt) sk.text(cx + cw / 2, y + 222, wrap(it.alt, (cw - 30) / 15)[0], 15, DIM, false, "middle");
+    });
+    y += cardH + 16;
+  } else {
+    const headH = items.some((it) => it.alt) ? 86 : 72;
+    items.forEach((it, i) => {
+      const cx = x0 + lw + i * cw;
+      sk.rect(cx + 4, y, cw - 8, headH, ITEM_COLORS[i % 4][0], "none", 0, 12);
+      const hp = strW(String(it.name)) * 28 < cw - 30 ? 28 : 22;
+      sk.text(cx + cw / 2, y + (it.alt ? 40 : 46), wrap(it.name, (cw - 30) / hp)[0], hp, "#fff", true, "middle");
+      if (it.alt) sk.text(cx + cw / 2, y + 70, wrap(it.alt, (cw - 30) / 16)[0], 16, "#f3f6fa", false, "middle");
+    });
+    y += headH + 12;
+  }
+  const tableTop = y;
+  rows.forEach(([label, vals], k) => {
+    const same = n > 1 && new Set(vals).size === 1 && vals[0] !== "—";      // 共同點用粗體
+    const h = Math.max(62, Math.max(...vals.map((v) => paraH(v, px, cw - 48)), paraH(label, 21, lw - 40)) + 26);
+    if (k % 2 === 0) sk.rect(x0, y, lw + n * cw, h, "#f2f4f7");
+    paraMid(sk, x0 + 22, y, h, label, 21, lw - 40, NAVY, true);
+    vals.forEach((v, i) => paraMid(sk, x0 + lw + i * cw + 24, y, h, v, px, cw - 48, INK, same));
+    sk.line(x0, y + h, x0 + lw + n * cw, y + h, LINE, 1);
+    y += h;
+  });
+  for (let i = 1; i < n; i++) sk.line(x0 + lw + i * cw, tableTop, x0 + lw + i * cw, y, LINE, 2);
+  y = noteBox(sk, y + 26, spec.note, NAVY, "#eef4fb", NAVY);
+  return sk.svg(y + 12, spec.title_zh || "比較表");
+}
+
+function layoutCard(spec, ts, imgs) {
+  const subj = spec.subject || {};
+  const fields = arr(spec.fields).filter((f) => isObj(f) && f.value).slice(0, 9)
+    .map((f) => [String(f.label ?? ""), String(f.value)]);
+  const isEn = isEnSpec(spec);
+  const img = imgs[0] || null;
+  const name = String(subj.name || spec.title_zh || "");
+  const title = name + (subj.alt && strW(name + subj.alt) < 34 ? `  ${subj.alt}` : "");
+  const sk = new Sketch();
+  header(sk, title, subj.tagline || spec.subtitle_en, ts);
+  const y0 = 168;
+  let x = 40, labW = 210;
+  if (img) {
+    sk.rect(40, y0, 600, 470, PAPER, LINE, 1.5, 16);
+    const [iw, ih] = fit(img, 560, 410);
+    sk.image(img.src, 40 + (600 - iw) / 2, y0 + 18 + (410 - ih) / 2, iw, ih);
+    sk.text(340, y0 + 456, isEn ? `Handout p.${img.page}` : `講義第 ${img.page} 頁附圖`, 17, DIM, false, "middle");
+    x = 672; labW = 150;
+  }
+  const fw = 1560 - x;
+  const warn = /禁忌|注意|副作用|警告|毒|caution|contraindic|warning|side effect/i;
+  let y = y0;
+  for (const [label, value] of fields) {
+    const hot = warn.test(label);
+    const h = Math.max(58, paraH(value, 22, fw - labW - 44) + 22, paraH(label, 20, labW - 20) + 18);
+    sk.rect(x, y, fw, h, PAPER, LINE, 1, 10);
+    sk.rect(x, y, labW, h, hot ? WARM_BG : "#eef4fb", "none", 0, 10);
+    paraMid(sk, x + labW / 2, y, h, label, 20, labW - 20, hot ? WARM : NAVY, true, 1.45, "middle");
+    paraMid(sk, x + labW + 22, y, h, value, 22, fw - labW - 44, INK);
+    y += h + 10;
+  }
+  y = Math.max(y + 16, img ? y0 + 470 + 26 : 0);
+  y = noteBox(sk, y, spec.note);
+  return sk.svg(y + 12, name || "主題卡");
+}
+
+function layoutProcess(spec, ts) {
+  const steps = arr(spec.steps).filter((s) => isObj(s) && s.title).slice(0, 7);
+  const formula = String(spec.formula || "").trim();
+  const isEn = isEnSpec(spec);
+  const sk = new Sketch();
+  header(sk, spec.title_zh, spec.subtitle_en, ts);
+  let y = 172;
+  const concept = String(spec.concept_zh || "").trim();
+  if (concept) y += para(sk, 44, y + 22 * 0.86, concept, 22, 1500, DIM) + 18;
+  const cx = 96, bx = 150, bw = 1560 - bx;
+  const boxes = steps.map((s) => {
+    const t = String(s.title), d = String(s.detail || "").trim();
+    const th = paraH(t, 27, bw - 56, 1.3), dh = d ? paraH(d, 22, bw - 56) : 0;
+    const h = Math.max(84, 22 + th + (d ? 8 + dh : 0) + 18);
+    const box = { y, h, t, d, th };
+    y += h + 22;
+    return box;
+  });
+  if (boxes.length) sk.line(cx, boxes[0].y + 42, cx, boxes.at(-1).y + 42, "#b8c7d9", 4);   // 連接線在圓圈底下
+  boxes.forEach((b, i) => {
+    sk.rect(bx, b.y, bw, b.h, PAPER, LINE, 1.5, 14);
+    sk.rect(bx, b.y, 8, b.h, GOLD, "none", 0, 4);
+    sk.circle(cx, b.y + 42, 28, NAVY);
+    sk.text(cx, b.y + 52, String(i + 1), 28, "#fff", true, "middle");
+    para(sk, bx + 30, b.y + 22 + 27 * 0.86, b.t, 27, bw - 56, NAVY, true, 1.3);
+    if (b.d) para(sk, bx + 30, b.y + 22 + b.th + 8 + 22 * 0.86, b.d, 22, bw - 56, INK);
+  });
+  y += 6;
+  if (formula) {
+    const fh = paraH(formula, 28, 1460, 1.3) + 66;
+    sk.rect(40, y, 1520, fh, "#f4ecf7", "#6a1b9a", 2, 14);
+    sk.text(68, y + 34, isEn ? "Formula" : "公式", 20, "#6a1b9a", true);
+    para(sk, 68, y + 46 + 28 * 0.86, formula, 28, 1460, "#4a148c", true, 1.3);
+    y += fh + 28;
+  }
+  y = noteBox(sk, y, spec.note);
+  return sk.svg(y + 12, spec.title_zh || "流程");
+}
+
+// images：把 spec._img 的參照換成 {src, w, h, page}；找不到（例如在另一台裝置）就不附圖
+export function renderDiagram(spec, ts = "", { images = () => null } = {}) {
+  const kind = diagramType(spec);
+  const imgs = arr(spec._img).map((ref) => (ref ? images(ref) : null));
+  try {
+    if (kind === "compare") return layoutCompare(spec, ts, imgs);
+    if (kind === "card") return layoutCard(spec, ts, imgs);
+    if (kind === "process") return layoutProcess(spec, ts);
+  } catch (e) {
+    console.warn("[Diagram]", kind, e);       // 新圖型畫不出來就退回重點整理
+  }
+  return renderPoints(spec, ts);
+}
+
+function renderPoints(spec, ts = "") {
   const el = [];
   const text = (x, y, s, px, color, { bold = false, anchor = "start", baseline = "hanging" } = {}) =>
     el.push(`<text x="${x}" y="${y}" font-size="${px}" fill="${color}" text-anchor="${anchor}" dominant-baseline="${baseline}"${bold ? ' font-weight="700"' : ""}>${esc(s)}</text>`);
