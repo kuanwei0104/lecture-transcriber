@@ -1,5 +1,5 @@
 // 離線快取：網路優先，失敗才用快取（確保更新後能立即拿到新版）
-const CACHE = "lecture-v18";
+const CACHE = "lecture-v19";
 const ASSETS = ["./", "index.html", "style.css", "app.js", "util.js", "gemini.js", "diagram.js",
                 "recognizers.js", "audio.js", "handout.js", "docx-export.js", "cloud.js", "config.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-180.png"];
 

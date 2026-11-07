@@ -54,6 +54,7 @@ let lastNarr = 0, lastDiag = 0, lastXl = 0;
 let narrBusy = false, diagBusy = false, questionsBusy = false;
 let recorder = null, recSeg = null, utterStart = null;   // 音檔錄製與時間對齊
 let trimSkip = false;                                     // 這次已經問過要不要刪除下課後內容
+let hiddenAt = null, lastTickAt = 0;                      // 手機切到背景／螢幕關閉的時間（判斷收音中斷）
 
 /* ───────────── 狀態列 ───────────── */
 function setStatus(msg, isError = false) {
@@ -77,11 +78,11 @@ function saveSession() {
 /* ───────────── 畫面：逐字稿 ───────────── */
 const nearBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 60;
 
-function appendLine(container, { ts, text, seg = null, t = null }) {
+function appendLine(container, { ts, text, seg = null, t = null, gap = null }) {
   container.querySelector(".hint")?.remove();
   const follow = nearBottom(container);
   const p = document.createElement("p");
-  p.className = "line";
+  p.className = gap ? "line gap" : "line";
   p.innerHTML = `<span class="ts">[${esc(ts)}]</span>${esc(text)}`;
   if (seg != null && t != null) {           // 有音檔的句子：點一下從那裡開始播放
     p.classList.add("seekable");
@@ -262,12 +263,13 @@ function detectLang(text, fallback) {
   }
   return words > cjk ? "en" : "zh";
 }
-const lectureLang = () => detectLang(session.lines.map((l) => l.text).join(" "));
+const spoken = () => session.lines.filter((l) => !l.gap);    // 不含「收音中斷」標記
+const lectureLang = () => detectLang(spoken().map((l) => l.text).join(" "));
 
 function questionSource(lang) {
   // 中文課以精修順稿為主；英文課另附原始英文逐字稿，讓問題貼近原本用語
   let text = session.narr.map((n) => n.md).join("\n\n");
-  const transcript = session.lines.map((l) => l.text).join(" ");
+  const transcript = spoken().map((l) => l.text).join(" ");
   if (lang === "en" || text.length < 300) text += "\n\n【Transcript / 逐字稿】\n" + transcript;
   return text.trim().slice(-60000);
 }
@@ -347,14 +349,84 @@ async function genDiagram() {
 }
 
 /* ───────────── 錄音控制 ───────────── */
+// 錄音中不讓螢幕自動關閉（螢幕一關，手機就會停止收音）
 async function keepAwake() {
-  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch { /* 不支援就算了 */ }
+  if (!running || document.visibilityState !== "visible" || wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => {
+      wakeLock = null;
+      if (running && document.visibilityState === "visible") setTimeout(keepAwake, 1000);   // 被系統收回就再要一次
+    });
+  } catch {
+    wakeLock = null;
+    if (!matchMedia("(pointer: coarse)").matches) return;    // 電腦螢幕關掉不影響收音
+    const msg = "⚠ 這個瀏覽器無法讓螢幕保持開啟：請把手機「設定 › 螢幕顯示與亮度 › 自動鎖定」改成「永不」，螢幕關閉會中斷收音";
+    setStatus(msg, true);
+    if (!store.get("wakeWarned")) { store.set("wakeWarned", true); alert(msg); }
+  }
+}
+
+// 目前收音最後一次有動靜的時間：手機切到背景時，iPhone 會停止收音，這個時間就停住
+function lastHeard() {
+  const t = [recorder?.lastData, rec instanceof GeminiAudioRecognizer ? rec.lastAudio : null].filter(Boolean);
+  return t.length ? Math.max(...t) : lastTickAt;
+}
+
+async function onHidden() {
+  hiddenAt = Date.now();
+  if (!running) return;
+  setStatus("⚠ 手機回到主畫面或螢幕關閉時，iPhone 會暫停收音，請盡量讓這頁保持在前景", true);
+  rec?.flush?.();
+  store.set("session", session);
+  // 萬一手機在背景把網頁關掉，到目前為止的錄音也已經存好
+  if (recorder && recSeg != null) {
+    const seg = session.audio[recSeg], r = recorder;
+    const blob = await r.snapshot();
+    if (blob?.size && r === recorder) {
+      seg.duration = (Date.now() - seg.startedAt) / 1000;
+      seg.mime = blob.type;
+      await audioStore.put(seg.key, blob).catch(() => {});
+      store.set("session", session);
+    }
+  }
+}
+
+async function onVisible() {
+  const away = hiddenAt ? Date.now() - hiddenAt : 0;
+  const from = Math.max(hiddenAt || 0, lastHeard());
+  hiddenAt = null;
+  if (!running) return;
+  keepAwake();
+  const ok = await rec?.revive?.();
+  if (!running) return;
+  // Android 等在背景也能繼續收音的情況：沒有中斷就照常進行
+  if (away >= 3000 && Date.now() - from >= 8000) {
+    markGap(from, Date.now());
+    utterStart = null;
+    await stopRecorder();          // 音檔從新的一段開始，句子才對得上播放時間
+    if (running) await startRecorder();
+  }
+  if (ok === false) {
+    setStatus("⚠ 收音已暫停：請點一下畫面繼續錄音", true);
+    document.addEventListener("pointerdown", async () => {
+      if (running && (await rec?.revive?.()) !== false) idleStatus();
+    }, { once: true });
+  } else idleStatus();
+}
+
+function markGap(from, to) {
+  const a = hhmmss(new Date(from)), b = hhmmss(new Date(to));
+  const line = { ts: a, text: `⚠ ${a}–${b} 手機離開此頁或螢幕關閉，這段沒有收音`, gap: [a, b] };
+  session.lines.push(line);
+  appendLine($("#transcript"), line);
+  saveSession();
 }
 
 const fmt = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; };
 
 function onTick() {
-  const now = Date.now();
+  const now = lastTickAt = Date.now();
   const rn = cfg.narrInt * 1000 - (now - lastNarr);
   const rd = cfg.diagInt * 1000 - (now - lastDiag);
   $("#narrTimer").textContent = `下次整理：${fmt(rn)}`;
@@ -382,11 +454,11 @@ async function startRecorder() {
 
 async function stopRecorder() {
   if (!recorder || recSeg == null) { recorder = null; recSeg = null; return; }
-  const seg = session.audio[recSeg];
-  const blob = await recorder.stop();
+  const seg = session.audio[recSeg], r = recorder;
+  const blob = await r.stop();
   recorder = null;
   if (blob && blob.size) {
-    seg.duration = (Date.now() - seg.startedAt) / 1000;
+    seg.duration = ((r.stoppedAt || Date.now()) - seg.startedAt) / 1000;
     seg.mime = blob.type;
     try { await audioStore.put(seg.key, blob); } catch (e) { setStatus(`音檔儲存失敗：${e.message.slice(0, 60)}`, true); }
     uploadSegAudio(seg, blob);
@@ -490,6 +562,7 @@ async function start() {
   if (ok === false) { rec = null; return; }
 
   running = true;
+  hiddenAt = null;
   session.started ??= Date.now();
   lastNarr = lastDiag = lastXl = Date.now();
   player.pause();
@@ -499,6 +572,7 @@ async function start() {
   setStatus("  錄音中…");
   updateEngineLabel();
   keepAwake();
+  store.set("recording", true);            // 沒有正常按停止（例如手機在背景把網頁關掉），下次打開時提醒
   tick = setInterval(onTick, 1000);
   onTick();
   saveSession();
@@ -507,6 +581,7 @@ async function start() {
 async function stop() {
   if (!running) return;
   running = false;
+  store.set("recording", false);
   clearInterval(tick);
   const btn = $("#btnRec");
   btn.textContent = "▶ 開始錄音";
@@ -554,7 +629,7 @@ function exportHtml() {
   // 下課後忘了按停止 → 先問要不要刪掉之後錄到的聊天與雜音
   if (!running && !trimSkip) {
     const base = startSec();
-    const end = detectLectureEnd(session.lines.map((l) => [tsSeconds(l.ts, base), l.text.length]));
+    const end = detectLectureEnd(spoken().map((l) => [tsSeconds(l.ts, base), l.text.length]));
     if (end != null) { openTrim(end, true); return; }
   }
   openExportDlg();
@@ -597,7 +672,7 @@ function detectLectureEnd(points) {
 // 大部分內容在 cut 之前的才保留；課後提問保留
 function trimPlan(cut) {
   const base = startSec();
-  const rows = session.lines.map((l) => [tsSeconds(l.ts, base), l.text.length]);
+  const rows = spoken().map((l) => [tsSeconds(l.ts, base), l.text.length]);
   const within = (x) => tsSeconds(x.ts, base) <= cut;
   const keep = (items) => {
     let prev = base ?? 0;
@@ -791,7 +866,9 @@ async function prepareExport(lang, progress) {
   const tree = session.mindmaps?.[lang]?.tree;
   const started = session.started ? new Date(session.started) : new Date();
   const label = `${started.toLocaleDateString(T.locale)} ${hhmm(started)}`;
-  return { lang, T, items, warning, tree, label, lines: session.lines };
+  const lines = session.lines.map((l) => (l.gap && lang === "en"
+    ? { ...l, text: `⚠ No audio ${l.gap[0]}–${l.gap[1]} (the phone left this page or the screen turned off)` } : l));
+  return { lang, T, items, warning, tree, label, lines };
 }
 
 // 列印成 PDF 用的 HTML
@@ -1289,14 +1366,8 @@ function bind() {
   $("#btnCancel").addEventListener("click", () => $("#settings").close());
   document.querySelectorAll(".tabs button").forEach((b) =>
     b.addEventListener("click", () => showTab(b.dataset.tab)));
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && running) {
-      keepAwake();
-      rec?.ctx?.resume?.();
-    } else if (running) {
-      setStatus("⚠ 畫面離開或鎖定時，手機會暫停收音，請保持此頁在前景", true);
-    }
-  });
+  document.addEventListener("visibilitychange", () =>
+    (document.visibilityState === "visible" ? onVisible() : onHidden()));
   window.addEventListener("beforeunload", (e) => {
     store.set("session", session);
     if (cloud.user && hasContent()) syncNow();
@@ -1318,6 +1389,10 @@ setStatus(cfg.key ? "就緒 ✓  按「開始錄音」開始"
   : cloud.enabled ? "請先登入（右上「👤 登入」），或在設定中輸入自己的 Gemini API Key"
   : "請先在設定中輸入 Gemini API Key");
 if (!cfg.key && !cloud.enabled) openSettings();
+if (store.get("recording")) {
+  store.set("recording", false);
+  setStatus("⚠ 上次錄音被中斷了（手機在背景時關閉了網頁），內容與音檔已保留，按「開始錄音」可以接著錄", true);
+}
 
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
@@ -1325,5 +1400,5 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 
 // 測試用：網址加上 ?debug 可從主控台注入文字
 if (new URLSearchParams(location.search).has("debug")) {
-  window.lecture = { applyTrim, detectLectureEnd, onFinal, genNarrative, genDiagram, genQuestions, flushTranslation, startRecorder, stopRecorder, playFrom, player, session: () => session, setRunning: (v) => (running = v), cloud, refreshGemini, renderAccountButton, openAccount, syncNow, gemini: () => gemini };
+  window.lecture = { applyTrim, detectLectureEnd, onFinal, onHidden, onVisible, rec: () => rec, recorder: () => recorder, genNarrative, genDiagram, genQuestions, flushTranslation, startRecorder, stopRecorder, playFrom, player, session: () => session, setRunning: (v) => (running = v), cloud, refreshGemini, renderAccountButton, openAccount, syncNow, gemini: () => gemini };
 }

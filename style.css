@@ -92,6 +92,7 @@ a { color: var(--blue); }
 #transcript .seekable { cursor: pointer; border-radius: 4px; padding: 1px 4px; margin-left: -4px; }
 #transcript .seekable:hover { background: rgba(41, 128, 185, .10); }
 #transcript .line.now { background: rgba(243, 156, 18, .22); }
+#transcript .line.gap { color: #c0670a; font-size: 13px; border-left: 3px solid #e67e22; padding-left: 8px; }
 .player { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .player[hidden] { display: none !important; }
 .pbtn { background: var(--blue); color: #fff; width: 32px; height: 32px; border-radius: 50%; font-size: 14px; flex: none; }

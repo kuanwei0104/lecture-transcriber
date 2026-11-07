@@ -53,19 +53,37 @@ export class ClipRecorder {
     this.mime = pickMime();
     this.chunks = [];
     this.rec = new MediaRecorder(this.stream, this.mime ? { mimeType: this.mime, audioBitsPerSecond: 32000 } : undefined);
-    this.rec.ondataavailable = (e) => { if (e.data.size) this.chunks.push(e.data); };
+    this.rec.ondataavailable = (e) => {
+      if (e.data.size) this.chunks.push(e.data);
+      this.lastData = Date.now();          // 手機切到背景時這裡會停，用來判斷收音有沒有中斷
+      this.onData?.();
+    };
+    this.rec.addEventListener("stop", () => { this.stoppedAt ??= Date.now(); });   // 麥克風被系統關掉時會自己停止
     this.rec.start(5000);                 // 每 5 秒交一塊，避免長時間錄音全部塞在記憶體最後才處理
-    this.startedAt = Date.now();
+    this.startedAt = this.lastData = Date.now();
     return this.startedAt;
+  }
+
+  // 目前為止錄到的音檔（不停止錄音）：切到背景前先存起來，萬一手機把網頁關掉也不會全部遺失
+  snapshot() {
+    return new Promise((resolve) => {
+      if (!this.rec || this.rec.state !== "recording") { resolve(null); return; }
+      const done = () => { clearTimeout(timer); this.onData = null; resolve(new Blob(this.chunks, { type: this.rec.mimeType || this.mime || "audio/webm" })); };
+      const timer = setTimeout(done, 1500);
+      this.onData = done;
+      try { this.rec.requestData(); } catch { done(); }
+    });
   }
 
   stop() {
     return new Promise((resolve) => {
-      if (!this.rec || this.rec.state === "inactive") { resolve(null); return; }
-      this.rec.onstop = () => {
+      if (!this.rec) { resolve(null); return; }
+      const done = () => {
         if (this.ownStream) this.stream.getTracks().forEach((t) => t.stop());
-        resolve(new Blob(this.chunks, { type: this.rec.mimeType || this.mime || "audio/webm" }));
+        resolve(this.chunks.length ? new Blob(this.chunks, { type: this.rec.mimeType || this.mime || "audio/webm" }) : null);
       };
+      if (this.rec.state === "inactive") { done(); return; }    // 已經自己停了：交出停止前錄到的部分
+      this.rec.onstop = done;
       this.rec.stop();
     });
   }

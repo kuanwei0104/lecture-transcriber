@@ -40,8 +40,12 @@ export class BrowserRecognizer {
     const done = new Set();          // 本輪已送出的 result index（iOS 會重複回傳舊結果）
     this.pending = "";
 
-    rec.onstart = () => { this.failures = 0; this.onStatus("  錄音中…"); };
+    rec.onstart = () => {
+      this.live = true; this.everStarted = true; this.lastAudio = Date.now();
+      this.failures = 0; this.onStatus("  錄音中…");
+    };
     rec.onresult = (e) => {
+      this.lastAudio = Date.now();
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
@@ -56,7 +60,9 @@ export class BrowserRecognizer {
       this.onInterim(interim);
     };
     rec.onerror = (e) => {
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      // 手機剛從背景回來時偶爾會回報 not-allowed，其實只是暫時的，繼續重試
+      const justBack = document.visibilityState !== "visible" || Date.now() - (this.revivedAt || 0) < 8000;
+      if ((e.error === "not-allowed" || e.error === "service-not-allowed") && !(this.everStarted && justBack)) {
         this.active = false;
         this.onError("麥克風或語音辨識權限被拒絕。iPhone 請到「設定 › Safari › 麥克風」允許，並確認「Siri 與聽寫」已開啟；或改用設定中的「Gemini 音訊辨識」。");
       } else if (e.error === "language-not-supported") {
@@ -68,22 +74,34 @@ export class BrowserRecognizer {
       }
     };
     rec.onend = () => {
+      this.live = this.starting = false;
       if (this.pending) { this.onFinal(this.pending); this.pending = ""; }   // 未確認的灰字直接收下
       this.onInterim("");
-      if (this.active) setTimeout(() => this._spawn(), Math.min(250 * 2 ** this.failures, 5000));
+      if (this.active) this.respawn = setTimeout(() => this._spawn(), Math.min(250 * 2 ** this.failures, 5000));
     };
     try {
+      this.starting = true;
       rec.start();
       this.rec = rec;
     } catch (err) {
+      this.starting = false;
       this.failures++;
-      setTimeout(() => this._spawn(), 1000);
+      this.respawn = setTimeout(() => this._spawn(), 1000);
     }
+  }
+
+  // 回到畫面：背景時累積的重試等待歸零，沒在聽就馬上重新開始
+  revive() {
+    this.revivedAt = Date.now();
+    this.failures = 0;
+    if (this.active && !this.live && !this.starting) { clearTimeout(this.respawn); this._spawn(); }
+    return true;
   }
 
   stop() {
     this.active = false;
     clearInterval(this.watchdog);
+    clearTimeout(this.respawn);
     try { this.rec?.stop(); } catch { /* ignore */ }
   }
 }
@@ -91,6 +109,7 @@ export class BrowserRecognizer {
 /* ───────────── Gemini 音訊辨識：收音 → 依停頓切段 → 上傳 Gemini ───────────── */
 const TARGET_RATE = 16000;
 const MIN_SEC = 6, MAX_SEC = 20, END_SILENCE = 0.8;
+const MIC = { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
 
 export class GeminiAudioRecognizer {
   static supported() {
@@ -105,9 +124,7 @@ export class GeminiAudioRecognizer {
 
   async start() {
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      this.stream = await navigator.mediaDevices.getUserMedia(MIC);
     } catch (e) {
       this.onError(`無法使用麥克風：${e.message}。請允許瀏覽器使用麥克風。`);
       return false;
@@ -115,16 +132,18 @@ export class GeminiAudioRecognizer {
     const AC = window.AudioContext || window.webkitAudioContext;
     this.ctx = new AC();
     await this.ctx.resume();
-    const src = this.ctx.createMediaStreamSource(this.stream);
+    this.src = this.ctx.createMediaStreamSource(this.stream);
     const proc = this.ctx.createScriptProcessor(4096, 1, 1);
     const mute = this.ctx.createGain();
     mute.gain.value = 0;
-    src.connect(proc); proc.connect(mute); mute.connect(this.ctx.destination);
+    this.src.connect(proc); proc.connect(mute); mute.connect(this.ctx.destination);
     this.proc = proc;
+    this.lastAudio = Date.now();
     this._reset();
     this.floor = 0.01;
 
     proc.onaudioprocess = (e) => {
+      this.lastAudio = Date.now();          // 手機切到背景時這裡會停，用來判斷收音有沒有中斷
       const x = e.inputBuffer.getChannelData(0);
       const d = downsample(x, this.ctx.sampleRate);
       let sum = 0;
@@ -147,6 +166,29 @@ export class GeminiAudioRecognizer {
       this._showInterim(dur);
     };
     return true;
+  }
+
+  // 切到背景前：已經收到的語音先送出去辨識
+  flush() { if (this.len) this._cut(); }
+
+  // 回到畫面：麥克風被系統關掉就重新接上（沿用同一個 AudioContext，iPhone 不用再點一次畫面）
+  async revive() {
+    if (!this.ctx) return true;
+    if (this.stream?.getAudioTracks().every((t) => t.readyState === "ended")) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(MIC);
+        this.src?.disconnect();
+        this.stream = stream;
+        this.src = this.ctx.createMediaStreamSource(stream);
+        this.src.connect(this.proc);
+      } catch (e) {
+        this.onStatus(`麥克風重新連線失敗：${e.message}`);
+        return false;
+      }
+    }
+    this._reset();                                 // 背景前沒送出的半句丟掉，免得接上回來後的話
+    try { await this.ctx.resume(); } catch { /* 需要使用者點一下才能恢復 */ }
+    return this.ctx.state === "running";
   }
 
   _reset() { this.chunks = []; this.len = 0; this.speech = 0; this.silence = 0; this.chunkStart = null; }
