@@ -171,7 +171,11 @@
 <dialog id="exportDlg">
   <form method="dialog" onsubmit="return false">
     <h2>匯出順稿</h2>
-    <p class="dlg-note">選擇要匯出的版本（PDF 檔，含心智圖、順稿、圖解、課後提問與原始逐字稿）。會開啟新分頁，在列印視窗選「另存為 PDF」。</p>
+    <p class="dlg-note">內容包含心智圖、順稿、圖解、課後提問與原始逐字稿。</p>
+    <div class="export-format" role="radiogroup" aria-label="檔案格式">
+      <label><input type="radio" name="exportFmt" value="pdf" checked> <strong>PDF</strong><small>開啟列印視窗，選「另存為 PDF」</small></label>
+      <label><input type="radio" name="exportFmt" value="docx"> <strong>Word（可編輯）</strong><small>直接下載 .docx 檔</small></label>
+    </div>
     <div class="export-choices">
       <button type="button" class="export-btn" data-lang="zh">
         <strong>📄 中文版</strong><small>繁體中文</small>
@@ -182,7 +186,24 @@
     </div>
     <p id="exportStatus" class="dlg-status" role="status"></p>
     <div class="dlg-actions">
+      <button type="button" id="btnTrimOpen" class="ghost trim-open">✂ 刪除下課後內容</button>
       <button type="button" id="btnExportClose" class="ghost">關閉</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="trimDlg" class="trim-dlg">
+  <form method="dialog" onsubmit="return false">
+    <h2>刪除下課後的內容</h2>
+    <p id="trimNote" class="dlg-note"></p>
+    <div id="trimList" class="trim-list" role="listbox" aria-label="逐字稿"></div>
+    <p id="trimInfo" class="trim-info" role="status"></p>
+    <p class="dlg-note small">錄音檔會保留；刪除後也可以從「匯出 › ✂ 刪除下課後內容」還原。</p>
+    <div class="dlg-actions wrap">
+      <button type="button" id="btnTrimUndo" class="ghost" hidden>還原已刪除的內容</button>
+      <button type="button" id="btnTrimCancel" class="ghost">取消</button>
+      <button type="button" id="btnTrimKeep" class="ghost" hidden>全部保留，直接匯出</button>
+      <button type="button" id="btnTrimCut" class="danger-fill">刪除之後的內容</button>
     </div>
   </form>
 </dialog>

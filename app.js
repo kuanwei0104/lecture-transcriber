@@ -2,6 +2,7 @@ import { $, esc, hhmmss, hhmm, collapseRepeats, store, mdToHtml } from "./util.j
 import { Gemini } from "./gemini.js";
 import { renderDiagram, renderMindmap, diagramType } from "./diagram.js";
 import { handoutImages } from "./handout.js";
+import { buildDocx } from "./docx-export.js";
 import { BrowserRecognizer, GeminiAudioRecognizer } from "./recognizers.js";
 import { audioStore, ClipRecorder, ClipPlayer } from "./audio.js";
 import { cloud } from "./cloud.js";
@@ -41,6 +42,8 @@ const emptySession = () => ({
   titles: [],
   questions: [],      // [{ts, data}]
   buf: { narr: [], diag: [], xl: [] },
+  untrimmed: null,    // 刪除下課後內容前的完整內容（可還原）
+  cutSec: null,       // 課程結束時間（當天第幾秒）
 });
 let session = { ...emptySession(), ...store.get("session", {}) };
 session.id ??= newId();
@@ -50,6 +53,7 @@ let rec = null, running = false, tick = null, wakeLock = null;
 let lastNarr = 0, lastDiag = 0, lastXl = 0;
 let narrBusy = false, diagBusy = false, questionsBusy = false;
 let recorder = null, recSeg = null, utterStart = null;   // 音檔錄製與時間對齊
+let trimSkip = false;                                     // 這次已經問過要不要刪除下課後內容
 
 /* ───────────── 狀態列 ───────────── */
 function setStatus(msg, isError = false) {
@@ -547,8 +551,152 @@ function hasContent() {
 
 function exportHtml() {
   if (!hasContent()) { alert("尚無內容可匯出。請先進行錄音。"); return; }
+  // 下課後忘了按停止 → 先問要不要刪掉之後錄到的聊天與雜音
+  if (!running && !trimSkip) {
+    const base = startSec();
+    const end = detectLectureEnd(session.lines.map((l) => [tsSeconds(l.ts, base), l.text.length]));
+    if (end != null) { openTrim(end, true); return; }
+  }
+  openExportDlg();
+}
+
+function openExportDlg() {
   $("#exportStatus").textContent = "";
   $("#exportDlg").showModal();
+}
+
+/* ───────────── 刪除下課後的內容（忘了按停止，錄到下課後的聊天與雜音） ───────────── */
+const LECTURE_END_GAP = 150;   // 超過這麼多秒沒有人講話、之後又只剩零星片段，就當作已經下課
+
+// 「HH:MM」或「HH:MM:SS」→ 當天第幾秒；比開始時間早（過了午夜）就加一天
+function tsSeconds(ts, start = null) {
+  const [h = 0, m = 0, s = 0] = String(ts).split(":").map(Number);
+  const sec = h * 3600 + m * 60 + s;
+  return start != null && sec < start - 3600 ? sec + 86400 : sec;
+}
+const startSec = () => (session.started ? tsSeconds(hhmmss(new Date(session.started))) : null);
+
+// points = [[秒, 字數]]。上課時講話很密集，下課後只剩零星的對話或雜音：找出第一個
+// 「很久沒人講話，之後的內容又遠比上課時稀疏」的停頓，回傳停頓前最後一句的時間；沒有就回傳 null
+function detectLectureEnd(points) {
+  if (points.length < 20) return null;
+  const end = points.at(-1)[0];
+  let chars = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    chars += points[i][1];
+    if (points[i + 1][0] - points[i][0] < LECTURE_END_GAP) continue;
+    const before = points[i][0] - points[0][0];
+    if (before < 600) continue;                    // 剛開始上課的停頓不算
+    const tail = points.slice(i + 1).reduce((a, p) => a + p[1], 0);
+    if (tail / Math.max(60, end - points[i + 1][0] + 60) < chars / before * 0.25) return points[i][0];
+  }
+  return null;
+}
+
+// 刪除 cut（秒）之後的內容後還留下什麼。順稿與圖解是把上一份之後的內容整理成一份，
+// 大部分內容在 cut 之前的才保留；課後提問保留
+function trimPlan(cut) {
+  const base = startSec();
+  const rows = session.lines.map((l) => [tsSeconds(l.ts, base), l.text.length]);
+  const within = (x) => tsSeconds(x.ts, base) <= cut;
+  const keep = (items) => {
+    let prev = base ?? 0;
+    return items.filter((it) => {
+      const t = tsSeconds(it.ts, base) + (it.ts.length === 5 ? 59 : 0);    // 順稿時間只到分鐘
+      let total = 0, before = 0;
+      for (const [s, n] of rows) if (s > prev && s <= t) { total += n; if (s <= cut) before += n; }
+      prev = t;
+      return total ? before * 2 >= total : t <= cut + 60;
+    });
+  };
+  return { lines: session.lines.filter(within), translations: session.translations.filter(within),
+           narr: keep(session.narr), diagrams: keep(session.diagrams) };
+}
+
+function redrawSession() {
+  ["#transcript", "#translation", "#narrative", "#diagrams"].forEach((s) => ($(s).innerHTML = ""));
+  restoreSession();
+}
+
+function applyTrim(cut) {
+  const plan = trimPlan(cut);
+  session.untrimmed ??= { lines: session.lines, translations: session.translations,   // 只備份第一次刪除前的內容
+                          narr: session.narr, diagrams: session.diagrams };
+  Object.assign(session, plan, { cutSec: cut, buf: { narr: [], diag: [], xl: [] } });
+  redrawSession();
+  saveSession();
+}
+
+function undoTrim() {
+  if (!session.untrimmed) return;
+  Object.assign(session, session.untrimmed, { untrimmed: null, cutSec: null });
+  redrawSession();
+  saveSession();
+}
+
+const trim = { sel: -1, fromExport: false };
+
+// 點選最後一句上課內容，刪除之後的逐字稿、順稿與圖解（錄音檔保留）
+function openTrim(suggested = null, fromExport = false) {
+  if (running) { alert("錄音中無法刪除內容，請先停止錄音。"); return; }
+  if (!session.lines.length && !session.untrimmed) { alert("這堂課還沒有逐字稿。"); return; }
+  const base = startSec();
+  const fmt = (sec) => `${String(Math.floor(sec / 3600) % 24).padStart(2, "0")}:${String(Math.floor(sec / 60) % 60).padStart(2, "0")}`;
+  trim.fromExport = fromExport;
+  $("#trimNote").textContent = suggested != null
+    ? `${fmt(suggested)} 之後只剩零星的對話，可能是下課後還沒停止錄音收到的聊天與雜音。已先選好看起來是最後一句上課內容的句子；請確認，也可以改點其他句子。`
+    : "點選「最後一句上課內容」，之後的逐字稿、順稿與圖解都會刪除。";
+  $("#trimList").innerHTML = session.lines.map((l, i) =>
+    `<div class="trim-row" data-i="${i}"><span class="ts">${esc(l.ts)}</span>${esc(l.text)}</div>`).join("");
+  let i = session.lines.length - 1;
+  if (suggested != null) i = session.lines.findLastIndex((l) => tsSeconds(l.ts, base) <= suggested);
+  $("#btnTrimKeep").hidden = !fromExport;
+  $("#btnTrimUndo").hidden = !session.untrimmed;
+  $("#btnTrimCut").textContent = fromExport ? "刪除之後的內容並匯出" : "刪除之後的內容";
+  $("#trimDlg").showModal();
+  selectTrim(i);
+  $("#trimList").children[i]?.scrollIntoView({ block: "center" });
+}
+
+function selectTrim(i) {
+  trim.sel = i;
+  [...$("#trimList").children].forEach((row, k) => {
+    row.classList.toggle("sel", k === i);
+    row.classList.toggle("cut", k > i);
+  });
+  $("#btnTrimCut").disabled = i < 0;
+  if (i < 0) { $("#trimInfo").textContent = ""; return; }
+  const plan = trimPlan(tsSeconds(session.lines[i].ts, startSec()));
+  $("#trimInfo").textContent = `將刪除 ${session.lines[i].ts} 之後的內容：逐字稿 ${session.lines.length - i - 1} 句、`
+    + `順稿 ${session.narr.length - plan.narr.length} 段、圖解 ${session.diagrams.length - plan.diagrams.length} 張`;
+}
+
+function bindTrim() {
+  $("#trimList").addEventListener("click", (e) => {
+    const row = e.target.closest(".trim-row");
+    if (row) selectTrim(Number(row.dataset.i));
+  });
+  $("#btnTrimCut").addEventListener("click", () => {
+    if (trim.sel < 0) return;
+    const ts = session.lines[trim.sel].ts;
+    applyTrim(tsSeconds(ts, startSec()));
+    $("#trimDlg").close();
+    setStatus(`已刪除 ${ts} 之後的內容（可在匯出視窗中還原）`);
+    if (trim.fromExport) { trimSkip = true; openExportDlg(); }
+  });
+  $("#btnTrimKeep").addEventListener("click", () => {
+    trimSkip = true;
+    $("#trimDlg").close();
+    openExportDlg();
+  });
+  $("#btnTrimUndo").addEventListener("click", () => {
+    if (!confirm("要把刪除的逐字稿、順稿與圖解全部還原嗎？")) return;
+    undoTrim();
+    $("#trimDlg").close();
+    setStatus("已還原刪除的內容");
+  });
+  $("#btnTrimCancel").addEventListener("click", () => $("#trimDlg").close());
+  $("#btnTrimOpen").addEventListener("click", () => { $("#exportDlg").close(); openTrim(null, true); });
 }
 
 // 同時最多 limit 個翻譯請求，避免超過免費額度的每分鐘上限
@@ -580,7 +728,7 @@ function questionsFor(q, lang) {
   return gemini.translateJson(plain, lang).then((d) => (q[key] = d));
 }
 
-async function buildExport(lang, progress, fileTitle) {
+async function prepareExport(lang, progress) {
   const T = EXPORT_TEXT[lang];
   const narrSrc = session.narr;
   const mdKey = `md_${lang}`;
@@ -627,17 +775,13 @@ async function buildExport(lang, progress, fileTitle) {
   await mapLimit(jobs, 3, async (job) => { await job(); progress(`整理中… ${++done} / ${jobs.length}`); });
   saveSession();
 
-  const qBlocks = await Promise.all(session.questions.map(async (q) => ({
-    ts: q.ts + "~",
-    html: `<section class="questions">${questionsHtml({ ts: q.ts, lang, data: await questionsFor(q, lang) })}</section>`,
+  const qItems = await Promise.all(session.questions.map(async (q) => ({
+    kind: "q", ts: q.ts + "~", qts: q.ts, data: await questionsFor(q, lang),   // 同一分鐘時提問排在順稿之後
   })));
-  const blocks = [
-    ...narrSrc.map((n) => ({ ts: n.ts, html: `<div class="ts">⏱ ${esc(n.ts)}</div>${mdToHtml(narrMd(n) || n.md)}` })),
-    ...qBlocks,
-    ...session.diagrams.map((d) => {
-      const spec = (lang === "en" ? d.spec_en : d.spec) || d.spec;
-      return { ts: d.ts, html: `<figure>${renderDiagram(spec, d.ts, { images: handoutImages.resolve })}<figcaption>${esc(d.ts)} ｜ ${esc(spec.title_zh || "")}${T.sep}${esc(spec.concept_zh || "")}</figcaption></figure>` };
-    }),
+  const items = [
+    ...narrSrc.map((n) => ({ kind: "narr", ts: n.ts, md: narrMd(n) || n.md })),
+    ...qItems,
+    ...session.diagrams.map((d) => ({ kind: "diag", ts: d.ts, spec: (lang === "en" ? d.spec_en : d.spec) || d.spec })),
   ].sort((a, b) => a.ts.localeCompare(b.ts));
 
   const warning = failures.length
@@ -645,12 +789,20 @@ async function buildExport(lang, progress, fileTitle) {
                      : `部分內容未翻譯（${failures[0]}），該段落保留原文。`)
     : "";
   const tree = session.mindmaps?.[lang]?.tree;
+  const started = session.started ? new Date(session.started) : new Date();
+  const label = `${started.toLocaleDateString(T.locale)} ${hhmm(started)}`;
+  return { lang, T, items, warning, tree, label, lines: session.lines };
+}
+
+// 列印成 PDF 用的 HTML
+function exportHtmlDoc({ lang, T, items, warning, tree, label, lines }, fileTitle) {
+  const blocks = items.map((b) => b.kind === "narr" ? `<div class="ts">⏱ ${esc(b.ts)}</div>${mdToHtml(b.md)}`
+    : b.kind === "q" ? `<section class="questions">${questionsHtml({ ts: b.qts, lang, data: b.data })}</section>`
+    : `<figure>${renderDiagram(b.spec, b.ts, { images: handoutImages.resolve })}<figcaption>${esc(b.ts)} ｜ ${esc(b.spec.title_zh || "")}${T.sep}${esc(b.spec.concept_zh || "")}</figcaption></figure>`);
   const mindmapHtml = tree
     ? `<figure class="mindmap"><h2>${T.mindmap}</h2>${renderMindmap(tree)}</figure>`
     : "";
-  const started = session.started ? new Date(session.started) : new Date();
-  const label = `${started.toLocaleDateString(T.locale)} ${hhmm(started)}`;
-  const transcript = session.lines.map((l) => `<p><span class="ts">[${esc(l.ts)}]</span> ${esc(l.text)}</p>`).join("\n");
+  const transcript = lines.map((l) => `<p><span class="ts">[${esc(l.ts)}]</span> ${esc(l.text)}</p>`).join("\n");
   return `<!doctype html>
 <html lang="${T.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -689,7 +841,7 @@ async function buildExport(lang, progress, fileTitle) {
 <div class="ts">${T.exported}${esc(new Date().toLocaleString(T.locale))}</div>
 ${warning ? `<div class="warn">⚠ ${esc(warning)}</div>` : ""}
 ${mindmapHtml}
-${blocks.map((b) => b.html).join("\n")}
+${blocks.join("\n")}
 ${transcript ? `<details class="transcript" open><summary>${T.transcript}</summary>${transcript}</details>` : ""}
 </body></html>`;
 }
@@ -746,13 +898,14 @@ async function doExport(lang) {
   const status = $("#exportStatus");
   const buttons = document.querySelectorAll("#exportDlg [data-lang]");
   if (lang === "en" && !gemini) { status.textContent = "English 版需要翻譯，請先在設定中輸入 Gemini API Key。"; return; }
+  if (document.querySelector('input[name="exportFmt"]:checked')?.value === "docx") return exportWord(lang, status, buttons);
   // 分頁要在按下按鈕的當下開啟，整理完才開會被瀏覽器擋下；被擋就改在本頁列印
   const win = window.open("", "_blank");
   win?.document.write(`<meta charset="utf-8"><title>…</title><p style="font:16px sans-serif;padding:24px;color:#555">整理中，請稍候…</p>`);
   buttons.forEach((b) => (b.disabled = true));
   try {
     const title = exportFileName(lang);
-    const doc = await buildExport(lang, (m) => (status.textContent = m), title);
+    const doc = exportHtmlDoc(await prepareExport(lang, (m) => (status.textContent = m)), title);
     if (win && !win.closed) showPdf(win, doc);
     else printInFrame(doc, title);
     status.textContent = `✓ 已開啟列印視窗：選「另存為 PDF」即可存成「${title}.pdf」`
@@ -765,6 +918,27 @@ async function doExport(lang) {
   }
 }
 
+// Word 版：可以直接編輯；下載成 .docx
+async function exportWord(lang, status, buttons) {
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const name = `${exportFileName(lang)}.docx`;
+    const data = await prepareExport(lang, (m) => (status.textContent = m));
+    status.textContent = "產生 Word 檔…";
+    const blob = await buildDocx(data, { images: handoutImages.resolve, q: { labels: qLabels(lang), list: questionList } });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement("a"), { href: url, download: name });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    status.textContent = `✓ 已下載「${name}」，可以用 Word 開啟編輯`;
+  } catch (e) {
+    status.textContent = `匯出失敗：${friendlyError(e)}`;
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
 
 /* ───────────── 課程講義（可選） ───────────── */
 const fileToBase64 = (file) => new Promise((res, rej) => {
@@ -1134,6 +1308,7 @@ bind();
 bindSplitter();
 bindPlayer();
 bindAccount();
+bindTrim();
 initCloud();
 applyTranslateUi();
 showTab("transcript");
@@ -1150,5 +1325,5 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 
 // 測試用：網址加上 ?debug 可從主控台注入文字
 if (new URLSearchParams(location.search).has("debug")) {
-  window.lecture = { onFinal, genNarrative, genDiagram, genQuestions, flushTranslation, startRecorder, stopRecorder, playFrom, player, session: () => session, setRunning: (v) => (running = v), cloud, refreshGemini, renderAccountButton, openAccount, syncNow, gemini: () => gemini };
+  window.lecture = { applyTrim, detectLectureEnd, onFinal, genNarrative, genDiagram, genQuestions, flushTranslation, startRecorder, stopRecorder, playFrom, player, session: () => session, setRunning: (v) => (running = v), cloud, refreshGemini, renderAccountButton, openAccount, syncNow, gemini: () => gemini };
 }

@@ -376,7 +376,7 @@ function mmText(x) {
   return x == null ? "" : String(x);
 }
 
-function mmNormalize(tree) {
+export function mmNormalize(tree) {
   if (Array.isArray(tree)) tree = { branches: tree };
   if (!tree || typeof tree !== "object") tree = {};
   const root = mmText(tree.root || tree.title || tree.topic || "");

@@ -216,3 +216,24 @@ dialog h2 { margin: 0 0 12px; color: var(--blue); font-size: 20px; }
 .ghost.small.danger { color: var(--red); }
 #accountDlg .ghost.small, #accountDlg .ghost { background: var(--bg); color: var(--text); }
 .dlg-actions .ghost { background: var(--bg); color: var(--text); }
+
+/* 匯出格式、刪除下課後內容 */
+.export-format { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 12px; }
+@media (max-width: 480px) { .export-format { grid-template-columns: 1fr; } }
+.export-format label { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.export-format label:has(input:checked) { border-color: var(--blue); background: var(--zh-bg); }
+.export-format small { grid-column: 2; color: var(--dim); font-size: 12px; }
+.dlg-actions .trim-open { margin-right: auto; }
+.dlg-actions.wrap { flex-wrap: wrap; }
+.trim-dlg { width: min(720px, calc(100vw - 32px)); }
+.trim-list { max-height: 46vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
+.trim-row { padding: 6px 10px; border-bottom: 1px solid var(--border); cursor: pointer; line-height: 1.5; }
+.trim-row:last-child { border-bottom: 0; }
+.trim-row .ts { color: var(--dim); margin-right: 8px; font-variant-numeric: tabular-nums; }
+.trim-row.sel { background: var(--blue); color: #fff; }
+.trim-row.sel .ts { color: #dbe9f6; }
+.trim-row.cut { color: var(--dim); text-decoration: line-through; opacity: .7; }
+.trim-info { color: var(--red); font-weight: 700; margin: 10px 0 4px; min-height: 1.4em; }
+.dlg-note.small { font-size: 13px; margin-bottom: 8px; }
+.danger-fill { background: var(--red); color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font-weight: 700; }
+.danger-fill:disabled { opacity: .5; }
